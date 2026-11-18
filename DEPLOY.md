@@ -196,6 +196,63 @@ Upload fails with "Something went wrong" and nothing in the log about Lighthouse
      on a slow link; large files need a few minutes.
 ```
 
+## Order bot (limit orders)
+
+SigmaSwap orders, and limit orders in particular, are completed by a small bot: every minute it
+looks at the orders SigmaSwap registered (`orders/` in the cache directory) and, when the pool can
+pay an order's minimum, broadcasts the transaction that fills it. It holds no keys; filling an
+order is a transaction anyone may send. Without it, limit orders do not fill.
+
+```bash
+cd /data/AAP_Storage/apps/sigmaswap
+sudo cp deploy/sigmaswap-bot.service deploy/sigmaswap-bot.timer /etc/systemd/system/
+sudo restorecon -F /etc/systemd/system/sigmaswap-bot.service /etc/systemd/system/sigmaswap-bot.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now sigmaswap-bot.timer
+```
+
+**GATES**
+
+```bash
+sudo systemctl start sigmaswap-bot.service; systemctl status sigmaswap-bot.service --no-pager | head -8
+#   "Deactivated successfully" / status=0/SUCCESS (it exits at once when there is nothing to do)
+systemctl list-timers sigmaswap-bot.timer --no-pager          # next run within a minute
+sudo journalctl -u sigmaswap-bot.service -n 20 --no-pager     # "filled order ..." lines appear here
+```
+
+- It runs as `apache` with the same settings file, so it needs nothing new. `ORDER_BOT=0` in the
+  env file makes every run exit immediately; `sudo systemctl disable --now sigmaswap-bot.timer`
+  removes it.
+- If the status shows `203/EXEC` or "Permission denied", SELinux is refusing to start the venv's
+  python from systemd: `sudo ausearch -m avc -ts recent | grep sigmaswap`, and check
+  `ls -Z venv/bin/python` is `httpd_sys_script_exec_t` (step 5) or relabel the venv `bin_t`.
+- It broadcasts through the explorer's submit endpoint (same host as all other chain reads).
+
+## Notifications
+
+All four apps tell the wallet where to ask for news (`api.pl?action=notify`). The wallet sends a
+random installation id with each request; what that installation started is kept in `watch/` in the
+cache directory. Nothing to install. Whether and how often the wallet asks is up to the wallet app.
+
+## SigmaLP (`sigmalp/`) and SigmaBridge (`sigmabridge/`)
+
+Two more apps in the same checkout, at `/apps/sigmaswap/sigmalp/` and `/apps/sigmaswap/sigmabridge/`.
+No new packages, Apache or SELinux steps; `redeploy.sh` covers them.
+
+```bash
+ls -Z sigmalp/api.pl sigmabridge/api.pl                                              # httpd_sys_script_exec_t
+curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmalp/api.pl    | head -c 60; echo   # {"manifest":{"appName":"SigmaLP"...
+curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmabridge/api.pl | head -c 60; echo  # {"manifest":{"appName":"SigmaBridge"...
+```
+
+**SigmaBridge and Rosen upgrades.** The Rosen lock address and fee-table token are built into
+`sigmaswap.py` (`ROSEN_LOCK_ADDRESS`, `ROSEN_MINFEE_NFT`). When Rosen upgrades its contracts these
+change. The app then refuses to bridge by itself ("The bridge is unavailable right now") because it
+requires recent activity at the lock address and a readable fee table. To switch to the new values
+before a code update, set `ROSEN_LOCK_ADDRESS` / `ROSEN_MINFEE_NFT` in the env file, taking them ONLY
+from Rosen's own release file. `sigmabridge/tokens.json` (which tokens go to which chains) is
+refreshed with `tools/fetch_bridge_tokens.py`.
+
 ## Token logos
 
 The logos in `icons/` are ordinary files in the repository; a `git pull` brings new ones. To add

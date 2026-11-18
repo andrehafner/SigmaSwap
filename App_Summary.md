@@ -15,6 +15,13 @@
   as unsigned transactions signed in the user's wallet. Its browser page lets a visitor upload the
   NFT's media, which the server checks and relays to Lighthouse (IPFS/Filecoin).
 
+- **SigmaLP** (`sigmalp/`): add and remove liquidity on the same pools, one direct transaction each.
+- **SigmaBridge** (`sigmabridge/`): send ERG and tokens out of Ergo to Cardano, Ethereum, BNB Chain or
+  Bitcoin over the Rosen bridge (an independent project). The app builds Rosen's "lock" transaction.
+- **Order bot**: a systemd timer runs `sigmaswap.py bot` every minute. It completes orders placed
+  through SigmaSwap when the pool can pay their minimum, by broadcasting a transaction that needs
+  no key. This is the one place the server sends a transaction to the network itself.
+
 ## 2. Roles & permissions
 
 - **Anonymous user** (the only role): view pairs, get a quote, request a swap / order / order-refund
@@ -38,6 +45,12 @@
 - **SigmaMint uploads** — NOT stored here. A file is spooled to `CACHE_DIR/tmp/` while it is checked
   and sent to Lighthouse, then deleted. `CACHE_DIR/mint-limits.json` holds upload counters and, for
   the current day only, a salted hash of each uploader's IP address (no raw addresses). **Low**.
+- **Order registry** — `CACHE_DIR/orders/<order box id>.json`: order box id, owner address, time,
+  and once filled the fill transaction id. Removed when the order is filled or cancelled. **Low**.
+- **Notification lists** — `CACHE_DIR/watch/<hash>.json`: per wallet installation (keyed by a hash
+  of the random id the wallet sends, never the id itself), the last 40 things it started (note id,
+  transaction id, amounts) and the latest message. Entries older than 60 days are dropped. **Low**.
+- **LP map** — `CACHE_DIR/lpmap.json`: which LP token belongs to which pool (public chain data).
 - **Request data, otherwise not stored**: Ergo address, token ids, amounts. Ergo addresses are public
   pseudonymous identifiers. Classification: **low**. No FERPA data, no NetIDs, no names, no email.
 - **Logs** (`ssl_error_log`): transaction id + first 8 characters of the pool id per built swap,
@@ -103,6 +116,26 @@
   stored against the session. Back in the wallet, Preview picks them up. Without a valid session
   id the page offers no upload and the endpoint refuses.
 
+- **Limit order**: the order form's optional "receive at least" sets the order's minimum. Above
+  today's price the order waits. Before it is created the order contract is checked against the
+  pool as it will look at the limit price, with both a standard fill and the bot's fill.
+- **Bot fill**: `sigmaswap.py bot` reads `orders/`, re-reads each order box and its pool from the
+  chain, and when the pool pays at least the order's minimum builds `[pool, order] → [pool, all of
+  the proceeds and the unused fee deposit to the owner, miner fee]`. Both contracts are evaluated;
+  the transaction is posted to the explorer's submit endpoint. It cannot pay anyone but the owner
+  the contract names: the order contract would reject it.
+- **Notifications**: wallet `GET api.pl?action=notify` with its installation id → the app checks
+  the open items of that installation on-chain → "your order was filled", "your swap completed", etc.
+- **SigmaLP**: `POST sigmalp/api.pl?action=addq|posq` → `lpquote` / `lppositions` read the pool →
+  ErgoPay → `lpbuild` builds `[pool, user boxes] → [pool, user, miner fee]` under the pool's own
+  deposit/redeem rules, evaluates the pool contract against it, and enforces a 1 % tolerance.
+- **SigmaBridge**: `POST sigmabridge/api.pl?action=preview` → `bridgequote` reads Rosen's on-chain
+  fee table for the token, validates the target address (checksum for the chosen chain), requires
+  recent activity at the lock address → the previewed transfer is stored under a random id →
+  ErgoPay → `bridgebuild` recomputes the fees (refuses if they rose), builds `[user boxes] → [lock
+  box with R4 = chain, target address, fees, sender; change; miner fee]`, and reads the lock box
+  back out of the built transaction to compare it with the request before releasing it.
+
 ## 5. Authentication & authorization
 
 - **Authentication: none, by design.** The app is not behind Shibboleth
@@ -126,6 +159,10 @@
 - **Lighthouse** (`upload.lighthouse.storage`, `gateway.lighthouse.storage`): SigmaMint stores
   uploaded NFT media there with the operator's API key. The wallet loads the preview picture
   from the gateway directly. Files on IPFS are public and effectively permanent.
+- **Rosen bridge** (third party): SigmaBridge sends funds to Rosen's lock address; delivery on the
+  other chain is done by Rosen's watchers and guards. Lock address, fee-table token and box format
+  were taken from Rosen's public code and confirmed against live transfers on-chain.
+- **Explorer submit endpoint**: used only by the order bot to broadcast fill transactions.
 - No SMTP, no Oracle, no MariaDB. Outbound hosts are fixed in configuration, never taken from a
   request (no SSRF surface).
 
@@ -204,6 +241,20 @@
   bound the volume, not the content. This is the main policy risk of the deployment.
 - **SigmaMint: anonymous token minting on a cornell.edu host.** Minting is permissionless on Ergo,
   but tokens and NFTs minted here could be presented as associated with the host.
+- **The order bot sends transactions on its own.** It holds no keys and can only fill an order in
+  the owner's favour (the contract enforces it), but it is an always-on process on a university
+  host acting on a public blockchain. `ORDER_BOT=0` or disabling the timer stops it; orders then
+  wait for ErgoDex's own bots or the owner's cancel.
+- **Limit orders may never fill**, and fill only while the bot runs. They can be cancelled any time.
+- **SigmaBridge: funds leave Ergo irreversibly.** A wrong (but well-formed) target address, or an
+  address the user does not control, loses the funds. Checksums catch typos, not wrong addresses.
+- **SigmaBridge depends on Rosen**, an independent bridge: delivery time, availability and the
+  safety of locked funds are Rosen's. If Rosen changes contracts, bridging stops until the built-in
+  values are updated; a stale lock address is the scenario the activity check exists to prevent.
+- **SigmaBridge has not carried a real transfer.** Its lock box encoding matches 37 of 37 recent
+  real transfers byte for byte and its fees match the real ones under the current fee table, but
+  no transfer from this app has been broadcast. First use should be the minimum amount.
+- **SigmaLP: liquidity providers can lose value** relative to holding when prices move.
 - **Financial software**: users move their own funds. Bugs here could produce a bad trade; the
   on-chain pool contract and the wallet's confirmation screen are the final safeguards.
 - **Third-party dependencies**: quotes and transactions depend on the public Ergo explorer and

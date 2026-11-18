@@ -17,7 +17,7 @@ fi
 cd "$APP_DIR" || exit 1
 
 # LF line endings (a CRLF shebang = "exec ... No such file or directory")
-sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh ./sigmamint/*.pl ./sigmalp/*.pl 2>/dev/null
+sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh ./sigmamint/*.pl ./sigmalp/*.pl ./sigmabridge/*.pl 2>/dev/null
 
 # Ownership + DAC permissions: root owns, nothing in the tree is apache-writable.
 # The tree is world-readable on purpose (755/644): it holds no secrets (those would
@@ -25,7 +25,7 @@ sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh ./sigmamint/*.pl ./sigmalp/*.pl 2>/
 chown -R root:apache "$APP_DIR"
 find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -type d -exec chmod 755 {} +
 find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -path "$APP_DIR/venv" -prune -o -type f -exec chmod 644 {} +
-chmod 755 "$APP_DIR"/*.pl "$APP_DIR"/sigmamint/*.pl "$APP_DIR"/sigmalp/*.pl "$APP_DIR"/redeploy.sh
+chmod 755 "$APP_DIR"/*.pl "$APP_DIR"/sigmamint/*.pl "$APP_DIR"/sigmalp/*.pl "$APP_DIR"/sigmabridge/*.pl "$APP_DIR"/redeploy.sh
 if [ -d "$APP_DIR/.git" ]; then
     chmod -R a+rX "$APP_DIR/.git"
 fi
@@ -51,6 +51,7 @@ echo "SELinux labels:"
 check "$APP_DIR/api.pl"       httpd_sys_script_exec_t "api.pl"
 check "$APP_DIR/sigmamint/api.pl" httpd_sys_script_exec_t "sigmamint/api.pl"
 check "$APP_DIR/sigmalp/api.pl"   httpd_sys_script_exec_t "sigmalp/api.pl"
+check "$APP_DIR/sigmabridge/api.pl" httpd_sys_script_exec_t "sigmabridge/api.pl"
 check "$APP_DIR/index.html"   httpd_sys_content_t     "index.html"
 check "$APP_DIR/sigmaswap.py" httpd_sys_content_t     "sigmaswap.py"
 if [ -d "$APP_DIR/venv" ]; then

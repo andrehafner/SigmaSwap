@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaBridge</title>
+<meta name="description" content="Send ERG and tokens from Ergo to other chains over the Rosen bridge, inside your Ergo wallet.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaBridge</h1>
+        <p class="sub">Send ERG and tokens from Ergo to other chains</p>
+    </div>
+</header>
+<main>
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaBridge is a Mosaik dApp: it runs inside the Ergo wallet app, where you fill in the transfer and sign.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Choose what to send, the chain, and your address on that chain. Preview, check the address, then bridge.</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaBridge dApp address">
+            <button id="copyApp" type="button">Copy</button>
+        </div>
+    </section>
+    <section class="card">
+        <h2>Good to know</h2>
+        <ul class="plain">
+            <li><strong>Out of Ergo only.</strong> To Cardano, Ethereum, BNB Chain or Bitcoin. To bring funds to Ergo, start in the other chain's wallet at app.rosen.tech.</li>
+            <li><strong>Cannot be reversed.</strong> If the address on the other chain is wrong, the funds are lost. Paste it and check it.</li>
+            <li><strong>Bridge fees.</strong> Rosen charges a bridge fee and the other chain's network fee, taken from the amount. Small amounts are not worth sending; the app shows the minimum.</li>
+            <li><strong>Who does what.</strong> SigmaBridge prepares the transaction and your wallet signs it. The Rosen bridge, an independent project, delivers on the other chain, usually within an hour or two.</li>
+        </ul>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

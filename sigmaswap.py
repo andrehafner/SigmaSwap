@@ -1159,6 +1159,298 @@ def hexid_safe(v):
     return v if isinstance(v, str) else hexid(v)
 
 
+# ---------------------------------------------------------------- bridge ----
+# SigmaBridge (sigmabridge/): send ERG or a token from Ergo to another chain over
+# the Rosen bridge. From Ergo that is ONE transaction: a "lock" box at Rosen's lock
+# address holding the amount, with register R4 = [target chain, target address,
+# network fee, bridge fee, sender address] (same as the Rosen web app builds it).
+# Rosen's watchers and guards do the rest on the other chain.
+#
+# A lock box with a bad target address or too small a fee is NOT refunded
+# automatically, so everything here is checked hard:
+#   - fees are read from Rosen's own on-chain fee configuration at build time
+#   - the target address must pass that chain's checksum
+#   - the lock address must show recent bridge activity, or we refuse (it changes
+#     when Rosen upgrades its contracts)
+
+ROSEN_LOCK_ADDRESS = ("nB3L2PD3J4rMmyGk7nnNdESpPXxhPRQ4t1chF8LTXtceMQjKCEgL2pFjPY6cehGjyEFZyHEomBTFXZyqfonvxDozr"
+                      "TtK5JzatD8SdmcPeJNWPvdRb5UxEMXE4WQtpAFzt2veT8Z6bmoWN")
+ROSEN_MINFEE_NFT = "e2ed4d64393222db666f20e67803e9e6fbe6d64531e14ff52ddd95615b0cbf17"
+ROSEN_LOCK_BOX_VALUE = 2000000          # nanoERG carried by a token lock box (what the Rosen app uses)
+ROSEN_FEE_RATIO_DIVISOR = 10000
+ROSEN_MAX_IDLE_DAYS = 10
+BRIDGE_CHAINS = ("cardano", "ethereum", "binance", "bitcoin")     # targets whose addresses we can verify
+
+_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _bech32_decode(addr):
+    """-> (hrp, data5 without checksum) for a valid bech32 (not bech32m) string, else None."""
+    if addr != addr.lower() or "1" not in addr:
+        return None
+    pos = addr.rfind("1")
+    hrp, rest = addr[:pos], addr[pos + 1:]
+    if not hrp or len(rest) < 7 or any(c not in _BECH32 for c in rest):
+        return None
+    data = [_BECH32.find(c) for c in rest]
+    chk = 1
+    for v in [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp] + data:
+        top = chk >> 25
+        chk = (chk & 0x1ffffff) << 5 ^ v
+        for i, g in enumerate((0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3)):
+            if (top >> i) & 1:
+                chk ^= g
+    return (hrp, data[:-6]) if chk == 1 else None
+
+
+def _convert_bits(data, frm, to):
+    acc = bits = 0
+    out = []
+    for v in data:
+        acc = (acc << frm) | v
+        bits += frm
+        while bits >= to:
+            bits -= to
+            out.append((acc >> bits) & ((1 << to) - 1))
+    if bits >= frm or ((acc << (to - bits)) & ((1 << to) - 1)):
+        return None
+    return out
+
+
+def _keccak256(data):
+    """Keccak-256 (Ethereum's hash; NOT the same as hashlib.sha3_256)."""
+    rc = [0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000, 0x000000000000808B,
+          0x0000000080000001, 0x8000000080008081, 0x8000000000008009, 0x000000000000008A, 0x0000000000000088,
+          0x0000000080008009, 0x000000008000000A, 0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
+          0x8000000000008003, 0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
+          0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008]
+    rot = [[0, 36, 3, 41, 18], [1, 44, 10, 45, 2], [62, 6, 43, 15, 61], [28, 55, 25, 21, 56], [27, 20, 39, 8, 14]]
+    mask = (1 << 64) - 1
+    rol = lambda x, n: ((x << n) | (x >> (64 - n))) & mask if n else x
+    rate = 136
+    msg = bytearray(data) + b"\x01" + b"\x00" * ((-len(data) - 2) % rate) + b"\x80"
+    if (len(data) + 1) % rate == 0:
+        msg = bytearray(data) + b"\x81"
+    st = [[0] * 5 for _ in range(5)]
+    for off in range(0, len(msg), rate):
+        for i in range(rate // 8):
+            st[i % 5][i // 5] ^= int.from_bytes(msg[off + 8 * i: off + 8 * i + 8], "little")
+        for rnd in range(24):
+            c = [st[x][0] ^ st[x][1] ^ st[x][2] ^ st[x][3] ^ st[x][4] for x in range(5)]
+            d = [c[(x - 1) % 5] ^ rol(c[(x + 1) % 5], 1) for x in range(5)]
+            st = [[st[x][y] ^ d[x] for y in range(5)] for x in range(5)]
+            b = [[0] * 5 for _ in range(5)]
+            for x in range(5):
+                for y in range(5):
+                    b[y][(2 * x + 3 * y) % 5] = rol(st[x][y], rot[x][y])
+            st = [[b[x][y] ^ ((~b[(x + 1) % 5][y]) & b[(x + 2) % 5][y]) for y in range(5)] for x in range(5)]
+            st[0][0] ^= rc[rnd]
+    return b"".join(st[i % 5][i // 5].to_bytes(8, "little") for i in range(4))
+
+
+def bridge_target_address(chain, raw):
+    """Validate a target-chain address. -> the address exactly as it goes into the lock box."""
+    a = raw.strip() if isinstance(raw, str) else ""
+    bad = SwapError("That is not a valid %s address. Check it carefully: a wrong address cannot be corrected."
+                    % {"cardano": "Cardano", "ethereum": "Ethereum", "binance": "BNB Chain", "bitcoin": "Bitcoin"}.get(chain, chain))
+    if not a or len(a) > 120 or not a.isascii() or not a.isalnum():
+        raise bad
+    if chain == "cardano":
+        dec = _bech32_decode(a)
+        if not dec or dec[0] != "addr":
+            raise bad
+        payload = _convert_bits(dec[1], 5, 8)
+        # header: high nibble = address type (0-7: payment address), low nibble = network (1 = mainnet)
+        if not payload or (payload[0] & 0x0f) != 1 or (payload[0] >> 4) > 7 or len(payload) not in (29, 57):
+            raise bad
+        return a
+    if chain == "bitcoin":
+        dec = _bech32_decode(a)
+        if not dec or dec[0] != "bc" or not dec[1] or dec[1][0] != 0:
+            raise SwapError("Use a Bitcoin address that starts with bc1q (native SegWit). Other formats are not supported by the bridge.")
+        prog = _convert_bits(dec[1][1:], 5, 8)
+        if not prog or len(prog) != 20:
+            raise SwapError("Use a Bitcoin address that starts with bc1q (native SegWit). Other formats are not supported by the bridge.")
+        return a
+    if chain in ("ethereum", "binance"):
+        if len(a) != 42 or not a.startswith("0x") or any(c not in "0123456789abcdefABCDEF" for c in a[2:]):
+            raise bad
+        body = a[2:]
+        if body != body.lower() and body != body.upper():          # mixed case carries a checksum (EIP-55)
+            digest = _keccak256(body.lower().encode("ascii")).hex()
+            expect = "".join(c.upper() if int(digest[i], 16) >= 8 else c for i, c in enumerate(body.lower()))
+            if expect != body:
+                raise bad
+        if int(body, 16) == 0:
+            raise bad
+        return "0x" + body.lower()
+    raise SwapError("That target chain is not supported.")
+
+
+def _plain(c):
+    from ergo_lib_python.chain import Constant
+    v = c.value if isinstance(c, Constant) else c
+    return [_plain(x) for x in v] if isinstance(v, (list, tuple)) else v
+
+
+def rosen_fee_config(cfg, token):
+    """Rosen's on-chain fee configuration for one token (token = 'erg' or a token id)."""
+    from ergo_lib_python.chain import Constant
+    nft = cfg.get("rosen_minfee_nft") or ROSEN_MINFEE_NFT
+    boxes, offset = [], 0
+    while offset < 1000:
+        page = explorer(cfg, "boxes/unspent/byTokenId/%s?limit=100&offset=%d" % (nft, offset)) or {}
+        items = page.get("items") or []
+        boxes += items
+        offset += 100
+        if len(items) < 100:
+            break
+    def is_for(b):
+        ids = [a.get("tokenId") for a in b.get("assets") or []]
+        if nft not in ids or len(b.get("additionalRegisters") or {}) < 6:
+            return False
+        return ids == [nft] if token == "erg" else (len(ids) == 2 and token in ids)
+    mine = [b for b in boxes if is_for(b)]
+    if len(mine) != 1:                       # none, or ambiguous: never guess a fee
+        raise SwapError("The bridge does not list fees for this token right now.")
+    reg = lambda k: _plain(Constant.from_bytes(bytes.fromhex(mine[0]["additionalRegisters"][k]["serializedValue"])))
+    chains = [bytes(x).decode("utf-8") for x in reg("R4")]
+    heights, bridge, network, ratio = reg("R5"), reg("R6"), reg("R7"), reg("R9")
+    n = len(heights)
+    if "ergo" not in chains or not n or not all(len(x) == n for x in (bridge, network, ratio)):
+        raise SwapError("The bridge's fee data could not be read. Please try again later.")
+    return {"chains": chains, "heights": heights, "bridge": bridge, "network": network, "ratio": ratio}
+
+
+def rosen_fees(conf, to_chain, height, amount):
+    """-> (bridge fee, network fee) for sending `amount` now. If a newer fee table is
+    about to take over, the HIGHER of the two is used, so the transfer stays valid."""
+    if to_chain not in conf["chains"]:
+        raise SwapError("The bridge does not send this token to that chain.")
+    ei, ci = conf["chains"].index("ergo"), conf["chains"].index(to_chain)
+    current = None
+    for i in range(len(conf["heights"]) - 1, -1, -1):
+        h = int(conf["heights"][i][ei])
+        if h != -1 and h < height:
+            current = i
+            break
+    if current is None:
+        raise SwapError("The bridge does not list fees for this token right now.")
+    best = None
+    for i in range(current, len(conf["heights"])):
+        if int(conf["heights"][i][ei]) == -1 or int(conf["heights"][i][ci]) == -1 or int(conf["bridge"][i][ci]) == -1:
+            if i == current:
+                raise SwapError("The bridge does not send this token to that chain right now.")
+            continue
+        base, net, ratio = int(conf["bridge"][i][ci]), int(conf["network"][i][ci]), int(conf["ratio"][i][ci])
+        fee = (max(base, amount * ratio // ROSEN_FEE_RATIO_DIVISOR), net)
+        best = fee if best is None else (max(best[0], fee[0]), max(best[1], fee[1]))
+    return best
+
+
+def rosen_lock_address(cfg):
+    """The lock address, only if it shows recent bridge activity."""
+    import time
+    from ergo_lib_python.chain import Address, NetworkPrefix
+    lock = cfg.get("rosen_lock_address") or ROSEN_LOCK_ADDRESS
+    address = Address(lock, NetworkPrefix.Mainnet)
+    txs = explorer(cfg, "addresses/%s/transactions?limit=1" % urllib.parse.quote(lock, safe="")) or {}
+    items = txs.get("items") or []
+    if not items or time.time() - int(items[0].get("timestamp", 0)) / 1000 > ROSEN_MAX_IDLE_DAYS * 86400:
+        sys.stderr.write("sigmaswap.py: Rosen lock address shows no recent activity - bridging refused\n")
+        raise SwapError("The bridge is unavailable right now. Please try again later.")
+    return address, lock
+
+
+def _bridge_quote(cfg, token, chain, amount, height):
+    if chain not in BRIDGE_CHAINS:
+        raise SwapError("That target chain is not supported.")
+    conf = rosen_fee_config(cfg, token)
+    bridge_fee, network_fee = rosen_fees(conf, chain, height, amount)
+    return {"bridge_fee": str(bridge_fee), "network_fee": str(network_fee),
+            "min_transfer": str(bridge_fee + network_fee + 1),
+            "receive": str(max(0, amount - bridge_fee - network_fee)),
+            "chains": [c for c in conf["chains"] if c in BRIDGE_CHAINS]}
+
+
+def cmd_bridgequote(req):
+    cfg = req["cfg"]
+    token = "erg" if req.get("token") in ("erg", ERG_ID) else req_token_id(req.get("token"), "token")
+    amount = req_amount(req.get("amount"), "amount")
+    rosen_lock_address(cfg)
+    info = explorer(cfg, "info") or {}
+    res = _bridge_quote(cfg, token, req.get("chain"), amount, int(info.get("height", 0)))
+    if req.get("to") is not None:
+        res["to"] = bridge_target_address(req.get("chain"), req.get("to"))
+    if req.get("address"):
+        req_address(req["address"])
+        res["balance"] = _balance(cfg, req["address"], ERG_ID if token == "erg" else token)
+    return res
+
+
+def cmd_bridgebuild(req):
+    from ergo_lib_python.chain import Constant, ErgoBoxCandidate, NetworkPrefix, NonMandatoryRegisterId, Token, TokenId
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+
+    cfg = req["cfg"]
+    token = "erg" if req.get("token") in ("erg", ERG_ID) else req_token_id(req.get("token"), "token")
+    chain = req.get("chain")
+    amount = req_amount(req.get("amount"), "amount")
+    max_fees = req_amount(req.get("max_fees"), "fee limit")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    to_address = bridge_target_address(chain, req.get("to"))
+    fee = miner_fee(cfg)
+
+    lock_address, lock_str = rosen_lock_address(cfg)
+    ctx, height = chain_context(cfg)
+    q = _bridge_quote(cfg, token, chain, amount, height)
+    bridge_fee, network_fee = int(q["bridge_fee"]), int(q["network_fee"])
+    if bridge_fee + network_fee > max_fees:
+        raise SwapError("The bridge fees changed. Please preview again.")
+    if amount <= bridge_fee + network_fee:
+        raise SwapError("The amount is not more than the bridge fees.")
+
+    r4 = [to.encode("utf-8") for to in (chain, to_address, str(network_fee), str(bridge_fee), addr_str)]
+    registers = {NonMandatoryRegisterId.R4: Constant([Constant(x) for x in r4])}
+    if token == "erg":
+        lock_out = ErgoBoxCandidate(value=amount, script=lock_address.ergo_tree(), creation_height=height, registers=registers)
+        need_tokens, erg_out = {}, amount
+    else:
+        lock_out = ErgoBoxCandidate(value=ROSEN_LOCK_BOX_VALUE, script=lock_address.ergo_tree(), creation_height=height,
+                                    tokens=[Token(TokenId(token), amount)], registers=registers)
+        need_tokens, erg_out = {token: amount}, ROSEN_LOCK_BOX_VALUE
+
+    def need_erg(toks):
+        return erg_out + fee + change_need(len(toks))
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs_multi(user_boxes, need_erg, need_tokens)
+    out_toks = dict(user_toks)
+    if token != "erg":
+        out_toks[token] -= amount
+    change = user_outputs(address, height, out_toks, user_erg - erg_out - fee)
+    unsigned = TxBuilder(BoxSelection(chosen, []), [lock_out] + change, height, fee, address).build()
+
+    # read the lock box back out of the finished transaction and compare it with what was asked
+    built = json.loads(unsigned.json())["outputs"][0]
+    back = [bytes(x).decode("utf-8") for x in _plain(Constant.from_bytes(bytes.fromhex(built["additionalRegisters"]["R4"])))]
+    if (back != [chain, to_address, str(network_fee), str(bridge_fee), addr_str]
+            or built["ergoTree"] != bytes(lock_address.ergo_tree()).hex()):
+        raise SwapError("The transfer could not be prepared. Please try again.")
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id), "address": addr_str, "mode": "bridge",
+        "watch_box": hexid(chosen[0].box_id), "token": token, "chain": chain, "to": to_address,
+        "amount": str(amount), "bridge_fee": str(bridge_fee), "network_fee": str(network_fee),
+        "receive": str(amount - bridge_fee - network_fee), "miner_fee": str(fee),
+    }
+
+
 # ------------------------------------------------------------------- bot ----
 # Orders placed through SigmaSwap are completed by SigmaSwap itself. Completing an
 # order needs NO key: the order contract lets anyone spend the order box as long as
@@ -1594,7 +1886,8 @@ def cmd_health(req):
 COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balance": cmd_balance,
             "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status,
             "mint": cmd_mint, "upload": cmd_upload,
-            "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions}
+            "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions,
+            "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild}
 
 
 def main():
