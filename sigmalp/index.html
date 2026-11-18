@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaLP</title>
+<meta name="description" content="Add and remove liquidity on the ErgoDex pools, inside your Ergo wallet.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaLP</h1>
+        <p class="sub">Provide liquidity to the ErgoDex pools</p>
+    </div>
+</header>
+<main>
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaLP is a Mosaik dApp: it runs inside the Ergo wallet app, where you choose a pool and sign.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Choose "Add liquidity" or "Your positions".</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaLP dApp address">
+            <button id="copyApp" type="button">Copy</button>
+        </div>
+    </section>
+    <section class="card">
+        <h2>Good to know</h2>
+        <ul class="plain">
+            <li><strong>What you get.</strong> LP tokens that stand for your share of the pool. Your share earns the pool's trading fees.</li>
+            <li><strong>The risk.</strong> When the price moves, the pool rebalances. You get back a different mix of the two tokens than you put in, which can be worth less than simply holding them.</li>
+            <li><strong>Direct.</strong> One transaction with the pool, signed in your wallet: it completes exactly as shown or not at all.</li>
+            <li><strong>No service fee.</strong> You pay only the Ergo network fee.</li>
+        </ul>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

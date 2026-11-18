@@ -889,6 +889,276 @@ def cmd_refund(req):
     }
 
 
+# ------------------------------------------------------------- liquidity ----
+# SigmaLP (sigmalp/): add and remove liquidity, directly against the pool box.
+# The pool contract's own rules (v1 Pool.sc):
+#   add    : LP tokens out <= min(dX * supply / X, dY * supply / Y)
+#   remove : X out <= LP in * X / supply   and   Y out <= LP in * Y / supply
+# where supply = LP_EMISSION - (LP tokens still held by the pool).
+# As with swaps, the pool contract is evaluated against the exact transaction
+# before anything is handed to a wallet.
+
+LP_EMISSION = 0x7fffffffffffffff
+
+
+def pool_state(pool):
+    """-> (x_id, X, y_id, Y, lp_id, supply) for either pool kind."""
+    lp_id, lp_reserve = pool.tokens[1]
+    return pool.x_id, pool.x_amt, pool.y_id, pool.y_amt, lp_id, LP_EMISSION - lp_reserve
+
+
+def pool_asset_names(pool):
+    """Token names/decimals as the explorer reports them (for pools not in the swap list)."""
+    names = {ERG_ID: {"ticker": "ERG", "decimals": 9}}
+    for a in pool.json.get("assets") or []:
+        name = a.get("name")
+        name = "".join(ch for ch in name if ch.isprintable())[:24].strip() if isinstance(name, str) else ""
+        dec = a.get("decimals")
+        names[a.get("tokenId")] = {"ticker": name or (str(a.get("tokenId"))[:6] + "..."),
+                                   "decimals": dec if isinstance(dec, int) and 0 <= dec <= 18 else 0}
+    return names
+
+
+def add_amounts(pool, dx):
+    """Depositing `dx` of X: the matching Y (rounded up so X is the binding side) and LP received."""
+    _x, X, _y, Y, _lp, supply = pool_state(pool)
+    if supply <= 0:
+        raise SwapError("This pool has no liquidity yet.")
+    dy = -(-dx * Y // X)
+    lp = min(dx * supply // X, dy * supply // Y)
+    if dy <= 0 or lp <= 0:
+        raise SwapError("That amount is too small for this pool.")
+    return dy, lp
+
+
+def remove_amounts(pool, lp):
+    _x, X, _y, Y, _lp, supply = pool_state(pool)
+    if lp > supply:
+        raise SwapError("That is more than this pool has issued.")
+    return lp * X // supply, lp * Y // supply
+
+
+def lp_pool_candidate(pool, dx, dy, dlp_user, height):
+    """Pool box after the user adds (dx,dy > 0, dlp_user > 0) or removes (dx,dy < 0, dlp_user < 0)."""
+    from ergo_lib_python.chain import ErgoBoxCandidate, Token, TokenId
+    tokens = list(pool.tokens)
+    value = pool.box.value
+    tokens[1] = (tokens[1][0], tokens[1][1] - dlp_user)
+    if pool.kind == "n2t":
+        value += dx
+        tokens[2] = (tokens[2][0], tokens[2][1] + dy)
+    else:
+        tokens[2] = (tokens[2][0], tokens[2][1] + dx)
+        tokens[3] = (tokens[3][0], tokens[3][1] + dy)
+    return ErgoBoxCandidate(value=value, script=pool.box.ergo_tree, creation_height=height,
+                            tokens=[Token(TokenId(t), a) for t, a in tokens], registers=pool.registers)
+
+
+def select_inputs_multi(boxes, need_erg, need_tokens):
+    """Like select_inputs, for several tokens at once. need_tokens: {token id: amount}."""
+    def tok(b):
+        return dict((hexid(t.token_id), t.amount) for t in b.tokens)
+
+    remaining = list(boxes)
+    chosen, have = [], {}
+    for tid, amt in need_tokens.items():
+        for b in sorted((b for b in remaining if tid in tok(b)), key=lambda b: -tok(b)[tid]):
+            if have.get(tid, 0) >= amt:
+                break
+            chosen.append(b)
+            remaining = [r for r in remaining if hexid(r.box_id) != hexid(b.box_id)]
+            for k, v in tok(b).items():
+                have[k] = have.get(k, 0) + v
+        if have.get(tid, 0) < amt:
+            raise SwapError("Insufficient token balance on this address.")
+
+    def totals():
+        erg, toks = 0, {}
+        for b in chosen:
+            erg += b.value
+            for k, v in tok(b).items():
+                toks[k] = toks.get(k, 0) + v
+        return erg, toks
+
+    remaining.sort(key=lambda b: -b.value)
+    while True:
+        erg, toks = totals()
+        if erg >= need_erg(toks):
+            return chosen, erg, toks
+        if not remaining:
+            raise SwapError("Insufficient ERG on this address for this transaction plus the network fee.")
+        if len(chosen) >= MAX_USER_INPUTS:
+            raise SwapError("This address holds too many small boxes. Consolidate the wallet "
+                            "(send your funds to yourself) and try again.")
+        chosen.append(remaining.pop(0))
+
+
+def _lp_info(pool, names=None):
+    x_id, X, y_id, Y, lp_id, supply = pool_state(pool)
+    names = names or pool_asset_names(pool)
+    return {"pool": pool.nft, "kind": pool.kind, "x": x_id, "y": y_id, "lp": lp_id,
+            "x_reserve": str(X), "y_reserve": str(Y), "supply": str(supply), "fee_num": pool.fee_num,
+            "x_info": names.get(x_id), "y_info": names.get(y_id)}
+
+
+def cmd_lpquote(req):
+    """Price an add (amount of X in) or a remove (amount of LP in)."""
+    cfg = req["cfg"]
+    pool = load_pool(cfg, req_token_id(req.get("pool"), "pool"))
+    res = _lp_info(pool)
+    amount = req_amount(req.get("amount"), "amount")
+    if req.get("action") == "remove":
+        x_out, y_out = remove_amounts(pool, amount)
+        res.update({"lp_in": str(amount), "x_out": str(x_out), "y_out": str(y_out)})
+    else:
+        dy, lp = add_amounts(pool, amount)
+        supply = int(res["supply"])
+        res.update({"x_in": str(amount), "y_in": str(dy), "lp_out": str(lp),
+                    "share_bps": lp * 10000 // (supply + lp)})
+        if req.get("address"):
+            req_address(req["address"])
+            res["x_balance"] = _balance(cfg, req["address"], pool.x_id)
+            res["y_balance"] = _balance(cfg, req["address"], pool.y_id)
+    return res
+
+
+def cmd_lpbuild(req):
+    from ergo_lib_python.chain import NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection, Wallet
+
+    cfg = req["cfg"]
+    action = req.get("action")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    amount = req_amount(req.get("amount"), "amount")
+    fee = miner_fee(cfg)
+    pool = load_pool(cfg, req_token_id(req.get("pool"), "pool"))
+    x_id, X, y_id, Y, lp_id, supply = pool_state(pool)
+
+    if action == "add":
+        dy, lp = add_amounts(pool, amount)
+        # the price may have moved since the preview: never take more Y, or give fewer LP, than agreed
+        if dy > req_amount(req.get("max_y"), "limit") or lp < req_amount(req.get("min_lp"), "limit"):
+            raise SwapError("The pool price moved. Please preview again.")
+        dx, dlp = amount, lp
+        need = {y_id: dy}
+        if x_id != ERG_ID:
+            need[x_id] = dx
+        erg_delta = -(dx if x_id == ERG_ID else 0)
+        token_delta = {lp_id: lp, y_id: -dy}
+        if x_id != ERG_ID:
+            token_delta[x_id] = -dx
+        first = lp_id
+    elif action == "remove":
+        x_out, y_out = remove_amounts(pool, amount)
+        if x_out < req_amount(req.get("min_x"), "limit") or y_out < req_amount(req.get("min_y"), "limit"):
+            raise SwapError("The pool price moved. Please preview again.")
+        if x_out <= 0 or y_out <= 0:
+            raise SwapError("That amount is too small to remove.")
+        if pool.kind == "n2t" and pool.box.value - x_out <= 10000000:
+            raise SwapError("The pool keeps a small minimum of ERG; remove slightly less.")
+        dx, dy, dlp = -x_out, -y_out, -amount
+        need = {lp_id: amount}
+        erg_delta = x_out if x_id == ERG_ID else 0
+        token_delta = {lp_id: -amount, y_id: y_out}
+        if x_id != ERG_ID:
+            token_delta[x_id] = x_out
+        first = y_id
+    else:
+        raise SwapError("Invalid request.")
+
+    def need_erg(toks):
+        n = len(set(toks) | set(token_delta))
+        return fee - erg_delta + change_need(n)
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs_multi(user_boxes, need_erg, need)
+
+    ctx, height = chain_context(cfg)
+    pool_out = lp_pool_candidate(pool, dx, dy, dlp, height)
+    out_toks = dict(user_toks)
+    for tid, d in token_delta.items():
+        out_toks[tid] = out_toks.get(tid, 0) + d
+        if out_toks[tid] < 0:
+            raise SwapError("Insufficient token balance on this address.")
+    user_outs = user_outputs(address, height, out_toks, user_erg + erg_delta - fee, first)
+
+    inputs = [pool.box] + chosen
+    unsigned = TxBuilder(BoxSelection(inputs, []), [pool_out] + user_outs, height, fee, address).build()
+    try:
+        Wallet([]).sign_tx_input(unsigned, 0, inputs, [], ctx)      # the pool contract accepts this exact change
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: pool %s rejected the liquidity change: %s\n" % (pool.nft, str(e)[:300]))
+        raise SwapError("The pool did not accept this. Please preview again.")
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, inputs, [], ctx)
+    res = _lp_info(pool)
+    res.update({
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id), "address": addr_str, "mode": "lp", "action": action,
+        "watch_box": hexid(pool.box.box_id), "miner_fee": str(fee),
+        "x_amount": str(abs(dx)), "y_amount": str(abs(dy)), "lp_amount": str(abs(dlp)),
+    })
+    return res
+
+
+def cmd_lpmap(req):
+    """{LP token id: pool id} for every ErgoDex pool (the pool boxes all sit at two addresses)."""
+    from ergo_lib_python.chain import Address, NetworkPrefix
+    from ergo_lib_python.ergo_tree import ErgoTree
+    cfg = req["cfg"]
+    mapping = {}
+    for tree_hex, n_tokens in ((N2T_POOL_TREE, 3), (T2T_POOL_TREE, 4)):
+        addr = Address.recreate_from_ergo_tree(ErgoTree.from_bytes(bytes.fromhex(tree_hex))).to_str(NetworkPrefix.Mainnet)
+        offset = 0
+        while offset < 3000:
+            page = explorer(cfg, "boxes/unspent/byAddress/%s?limit=100&offset=%d"
+                            % (urllib.parse.quote(addr, safe=""), offset)) or {}
+            items = page.get("items") or []
+            for b in items:
+                assets = b.get("assets") or []
+                if len(assets) == n_tokens and int(assets[0].get("amount", 0)) == 1 and b.get("ergoTree") == tree_hex:
+                    mapping[assets[1]["tokenId"]] = assets[0]["tokenId"]
+            offset += 100
+            if len(items) < 100:
+                break
+    if not mapping:
+        raise SwapError("Pool data is unavailable right now.")
+    return {"map": mapping}
+
+
+def cmd_lppositions(req):
+    """The address's liquidity positions: LP tokens it holds, and what they are worth right now."""
+    cfg = req["cfg"]
+    req_address(req.get("address"))
+    lpmap = req.get("map") or {}
+    bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+    positions = []
+    for t in bal.get("tokens") or []:
+        pool_id = lpmap.get(t.get("tokenId"))
+        if not pool_id or not is_hex64(pool_id) or len(positions) >= 12:
+            continue
+        try:
+            pool = load_pool(cfg, pool_id)
+            lp = int(t.get("amount", 0))
+            if hexid_safe(pool.tokens[1][0]) != t.get("tokenId") or lp <= 0:
+                continue
+            x_out, y_out = remove_amounts(pool, lp)
+            info = _lp_info(pool)
+            info.update({"lp_amount": str(lp), "x_out": str(x_out), "y_out": str(y_out),
+                         "share_bps": lp * 10000 // max(1, int(info["supply"]))})
+            positions.append(info)
+        except SwapError:
+            continue
+    return {"positions": positions}
+
+
+def hexid_safe(v):
+    return v if isinstance(v, str) else hexid(v)
+
+
 # ------------------------------------------------------------------- bot ----
 # Orders placed through SigmaSwap are completed by SigmaSwap itself. Completing an
 # order needs NO key: the order contract lets anyone spend the order box as long as
@@ -1323,7 +1593,8 @@ def cmd_health(req):
 
 COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balance": cmd_balance,
             "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status,
-            "mint": cmd_mint, "upload": cmd_upload}
+            "mint": cmd_mint, "upload": cmd_upload,
+            "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions}
 
 
 def main():

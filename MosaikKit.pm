@@ -12,9 +12,11 @@ use Exporter 'import';
 use File::Spec;
 use JSON::PP ();
 use Digest::SHA qw(sha256_hex);
-use AppConfig qw(cfg);
+use AppConfig qw(cfg chain);
 
-our @EXPORT = qw(watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
+my $ERG_ID = '0' x 64;
+
+our @EXPORT = qw(get_pools registry watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
 
 sub O     { my @kv = @_; my @o; while (@kv) { my ($k, $v) = splice(@kv, 0, 2); push @o, $k, $v if defined $v } return bless \@o, 'JObj' }
 
@@ -153,6 +155,73 @@ sub load_record {
     my $d = eval { JSON::PP->new->utf8->decode(scalar <$fh>) };
     close $fh;
     return ref $d eq 'HASH' ? $d : undef;
+}
+
+# ---- the liquid-pool list (shared by SigmaSwap and SigmaLP) -------------------
+
+sub cache_file {
+    my $dir = cache_dir();
+    return defined $dir ? File::Spec->catfile($dir, 'pools.json') : undef;
+}
+
+sub read_pool_cache {
+    my ($file) = @_;
+    open(my $fh, '<', $file) or return undef;
+    local $/;
+    my $d = eval { JSON::PP->new->utf8->decode(scalar <$fh>) };
+    close $fh;
+    return (ref $d eq 'HASH' && ref $d->{pools} eq 'ARRAY' && @{ $d->{pools} }) ? $d->{pools} : undef;
+}
+
+sub get_pools {
+    my $file = cache_file();
+    my $ttl  = cfg('POOLS_TTL', 180) + 0;
+    my $have = defined $file && -f $file;
+    if ($have && time - (stat $file)[9] < $ttl) {
+        my $p = read_pool_cache($file);
+        return $p if $p;
+    }
+    my $res = chain('pools', {});
+    if ($res->{ok} && ref $res->{pools} eq 'ARRAY' && @{ $res->{pools} }) {
+        if (defined $file) {
+            my $tmp = "$file.$$";
+            if (open(my $fh, '>', $tmp)) {
+                print {$fh} JSON::PP->new->utf8->encode({ pools => $res->{pools} });
+                close $fh;
+                rename($tmp, $file) or unlink $tmp;
+            }
+        }
+        return $res->{pools};
+    }
+    if ($have) {    # upstream is down: a stale list beats no app (quotes are always live)
+        my $p = read_pool_cache($file);
+        return $p if $p;
+    }
+    return [];
+}
+
+# -> { tokens => {id => {id,ticker,decimals,tvl,label}}, order => [ids], pair => {a => {b => pool}} }
+sub registry {
+    my $pools = get_pools();
+    my (%tok, %pair, %seen);
+    for my $p (@$pools) {
+        for my $side ($p->{x}, $p->{y}) {
+            my $t = $tok{ $side->{id} } ||= { id => $side->{id}, ticker => $side->{ticker},
+                                               decimals => $side->{decimals} + 0, tvl => 0 };
+            $t->{tvl} += $p->{tvl};
+        }
+        $pair{ $p->{x}{id} }{ $p->{y}{id} } = $p;
+        $pair{ $p->{y}{id} }{ $p->{x}{id} } = $p;
+    }
+    # Token names are free text chosen by whoever minted the token, so two tokens
+    # can share a ticker. Whenever that happens, show the token id next to it.
+    $seen{ lc $_->{ticker} }++ for values %tok;
+    for my $t (values %tok) {
+        $t->{label} = ($seen{ lc $t->{ticker} } > 1 && $t->{id} ne $ERG_ID)
+            ? "$t->{ticker} (" . substr($t->{id}, 0, 6) . "\x{2026})" : $t->{ticker};
+    }
+    my @order = sort { ($b eq $ERG_ID) <=> ($a eq $ERG_ID) || $tok{$b}{tvl} <=> $tok{$a}{tvl} || $a cmp $b } keys %tok;
+    return { tokens => \%tok, order => \@order, pair => \%pair };
 }
 
 # ---- notifications -----------------------------------------------------------
