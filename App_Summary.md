@@ -108,6 +108,9 @@
 - App: `/data/AAP_Storage/apps/sigmaswap/` (URL `/apps/sigmaswap`)
   - `api.pl` all HTTP logic · `AppConfig.pm` config + helper runner · `sigmaswap.py` chain logic
   - `index.html` / `app.js` / `style.css` / `icon.png` landing page
+  - `icons/<token id>.png` bundled token logos (shown on the quote card and the landing page),
+    built by the dev tool `tools/fetch_icons.py` from ergodex.io and the Spectrum token-logos
+    repository; `icons/unknown.png` is the placeholder
   - `venv/` Python virtualenv (not in git) · `deploy/sigmaswap.conf` · `redeploy.sh`
 - Settings: `/data/AAP_Storage/secrets/sigmaswap.env` (no secrets inside)
 - Cache: `/data/AAP_Storage/apps/uploads/sigmaswap/pools.json`

@@ -142,6 +142,17 @@ new packages, no SELinux or Apache changes. Status notes are written to `tx/` in
 cache directory. The optional keys (`ORDER_*`, `USE_MEMPOOL`, `EXPLORER_WEB_URL`) are described in
 `sigmaswap.env.example`.
 
+## Token logos
+
+The logos in `icons/` are ordinary files in the repository; a `git pull` brings new ones. To add
+logos for newly listed tokens, run `python3 tools/fetch_icons.py` on a development machine (it
+needs node + playwright, which the web server does not have), commit `icons/`, and deploy as usual.
+A token without a logo shows a placeholder; nothing breaks.
+
+`deploy/sigmaswap.conf` now also blocks `tools/` from being served. Copy it over once
+(`sudo cp deploy/sigmaswap.conf /etc/httpd/conf.d/ && sudo httpd -t && sudo systemctl reload httpd`).
+Skipping this is harmless: the tool scripts contain nothing sensitive.
+
 ## Troubleshooting
 
 Always read **`/var/log/httpd/ssl_error_log`** (not `error_log`). Lines from this app start with

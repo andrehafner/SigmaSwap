@@ -36,7 +36,7 @@ use Math::BigFloat;
 use File::Spec;
 use AppConfig qw(cfg base_url chain);
 
-use constant APP_VERSION => 4;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 5;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -727,6 +727,12 @@ sub act_quote {
             style => 'HEADLINE2', textColor => 'PRIMARY');
 
     my @rows = (
+        # the two token logos, pay -> receive
+        O(type => 'Row', packed => TRUE, spacing => 'DEFAULT', children => [
+            O(type => 'Image', url => icon_url($s->{from}), size => 'SMALL'),
+            O(type => 'Icon', icon => 'FORWARD', size => 'MEDIUM', tintColor => 'SECONDARY'),
+            O(type => 'Image', url => icon_url($s->{to}), size => 'SMALL'),
+        ]),
         kv_row('You pay', $pay),
         kv_row($order ? 'You receive (estimate)' : 'You receive', $get_el),
     );
@@ -743,6 +749,14 @@ sub act_quote {
                       align => 'START') if $bps >= 500;
     return finish_quote($q, $s, $from, $to, $pool, $min_out, $fee, $order, \@rows);
 }
+
+# Token logos are bundled PNGs (icons/<token id>.png, built by tools/fetch_icons.py);
+# a token without one gets the generic placeholder.
+sub icon_path {
+    my ($id) = @_;
+    return ($id =~ /^[0-9a-f]{64}\z/ && -f "$FindBin::Bin/icons/$id.png") ? "icons/$id.png" : 'icons/unknown.png';
+}
+sub icon_url { return "$BASE/" . icon_path($_[0]) }
 
 sub detail_rows {
     my ($q, $s, $from, $to, $rate, $bps, $fee, $order, $ex_fee, $show_min) = @_;
@@ -943,6 +957,7 @@ sub act_pools {
     for my $p (sort { $b->{tvl} <=> $a->{tvl} } map { values %$_ } values %{ $reg->{pair} }) {
         next if $done{ $p->{id} }++;
         push @list, O(x => $reg->{tokens}{ $p->{x}{id} }{label}, y => $reg->{tokens}{ $p->{y}{id} }{label},
+                      xi => icon_path($p->{x}{id}), yi => icon_path($p->{y}{id}),
                       tvl => N(sprintf('%.2f', $p->{tvl})));
     }
     success_json(pools => \@list);

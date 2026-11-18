@@ -39,7 +39,13 @@ function renderPools() {
     // token names are untrusted on-chain text: always escaped
     container.innerHTML = shown.map(p => `
         <div class="pool">
-            <span>${escapeHtml(p.x)} / ${escapeHtml(p.y)}</span>
+            <span class="pair">
+                <span class="logos">
+                    <img src="${escapeHtml(p.xi)}" alt="" width="22" height="22" loading="lazy">
+                    <img src="${escapeHtml(p.yi)}" alt="" width="22" height="22" loading="lazy">
+                </span>
+                <span>${escapeHtml(p.x)} / ${escapeHtml(p.y)}</span>
+            </span>
             <span class="tvl" title="Liquidity in this pool">${escapeHtml(formatUsd(p.tvl))}</span>
         </div>`).join('');
 }

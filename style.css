@@ -92,5 +92,9 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--primary); o
     overflow-wrap: anywhere;
 }
 .pool:first-child { border-top: 0; }
+.pool .pair { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pool .logos { display: flex; flex: none; }
+.pool .logos img { border-radius: 50%; background: var(--bg); object-fit: contain; }
+.pool .logos img + img { margin-left: -6px; }
 .pool .tvl { color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 footer { padding-bottom: 32px; color: var(--text-secondary); font-size: .8rem; }
