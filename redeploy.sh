@@ -19,13 +19,18 @@ cd "$APP_DIR" || exit 1
 # LF line endings (a CRLF shebang = "exec ... No such file or directory")
 sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh 2>/dev/null
 
-# Ownership + DAC permissions: root owns, apache reads; nothing in the tree is apache-writable.
+# Ownership + DAC permissions: root owns, nothing in the tree is apache-writable.
+# The tree is world-readable on purpose (755/644): it holds no secrets (those would
+# live in the env file outside the tree), and admins can then cd/ls/git without sudo.
 chown -R root:apache "$APP_DIR"
-find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -type d -exec chmod 750 {} +
-find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -path "$APP_DIR/venv" -prune -o -type f -exec chmod 640 {} +
-chmod 750 "$APP_DIR"/*.pl "$APP_DIR"/redeploy.sh
+find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -type d -exec chmod 755 {} +
+find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -path "$APP_DIR/venv" -prune -o -type f -exec chmod 644 {} +
+chmod 755 "$APP_DIR"/*.pl "$APP_DIR"/redeploy.sh
+if [ -d "$APP_DIR/.git" ]; then
+    chmod -R a+rX "$APP_DIR/.git"
+fi
 if [ -d "$APP_DIR/venv" ]; then
-    chmod -R g+rX,o-rwx "$APP_DIR/venv"
+    chmod -R a+rX "$APP_DIR/venv"
 fi
 
 # SELinux labels (only applies rules that the one-time `semanage fcontext` step installed)
