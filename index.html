@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaSwap</title>
+<meta name="description" content="Swap ERG and Ergo tokens on the ErgoDex liquidity pools, inside your Ergo wallet.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaSwap</h1>
+        <p class="sub">Swap ERG and Ergo tokens on the ErgoDex liquidity pools</p>
+    </div>
+</header>
+
+<main>
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaSwap is a Mosaik dApp: it runs inside the Ergo wallet app, and every swap is
+           reviewed and signed there. Nothing is installed and no account is needed.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Choose your wallet address, the tokens and the amount, preview, then swap.</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaSwap dApp address">
+            <button id="copyBtn" type="button">Copy</button>
+        </div>
+        <p id="copyMsg" class="hint" role="status"></p>
+    </section>
+
+    <section class="card">
+        <h2>How a swap works</h2>
+        <ul class="plain">
+            <li><strong>Direct.</strong> One transaction between your wallet and the pool: it either
+                completes exactly as previewed or does not happen at all.</li>
+            <li><strong>Non-custodial.</strong> SigmaSwap only prepares the transaction. Your wallet shows it and
+                signs it; your keys and funds never leave your wallet.</li>
+            <li><strong>No service fee.</strong> You pay the pool's own fee and the Ergo network fee.</li>
+        </ul>
+    </section>
+
+    <section class="card">
+        <div class="row">
+            <h2>Available pairs</h2>
+            <span id="poolCount" class="badge"></span>
+        </div>
+        <input id="filter" type="search" placeholder="Filter by token" aria-label="Filter pairs by token">
+        <div id="pools" class="pools"><p class="hint">Loading pools&hellip;</p></div>
+    </section>
+</main>
+
+<footer>
+    <p>Pool data from ErgoDex and the Ergo blockchain. Token names are set by whoever created the token:
+       always check the token in your wallet before you sign.</p>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

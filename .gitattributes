@@ -1,0 +1,12 @@
+# Enforce LF: a CRLF shebang makes Apache fail with "exec ... No such file or directory"
+*.pl   text eol=lf
+*.pm   text eol=lf
+*.cgi  text eol=lf
+*.py   text eol=lf
+*.sh   text eol=lf
+*.conf text eol=lf
+*.html text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.md   text eol=lf
+*.png  binary

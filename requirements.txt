@@ -1,0 +1,2 @@
+# Python side of SigmaSwap (transaction building only). Installed into ./venv - see DEPLOY.md.
+ergo-lib-python==0.28.0
