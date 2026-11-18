@@ -28,7 +28,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 2;
+use constant APP_VERSION => 3;
 use constant CHAINS      => (cardano => 'Cardano', ethereum => 'Ethereum', binance => 'BNB Chain', 'bitcoin-runes' => 'Bitcoin Runes',
                             bitcoin => 'Bitcoin', doge => 'Dogecoin', firo => 'Firo');
 use constant CHAIN_ORDER => qw(cardano ethereum binance bitcoin-runes bitcoin doge firo);    # same order as the Rosen app
@@ -83,24 +83,22 @@ sub tokens {    # bundled list (built from Rosen's token map by tools/fetch_brid
                     && ($_->{decimals} // -1) =~ /^\d{1,2}\z/ && grep { $ok{$_} } @{ $_->{chains} } } @{ ref $d eq 'ARRAY' ? $d : [] } ];
 }
 
-sub state {    # the form's values, reduced to known-good ones
+sub state {    # the form's values, reduced to known-good ones. Order as in the Rosen app: chain, then token.
     my ($v) = @_;
     my %s = (address => good_address($v->{address}));
     my $list = tokens();
-    ($s{token}) = grep { defined $v->{token} && !ref $v->{token} && $_->{id} eq $v->{token} } @$list;
-    $s{token} ||= $list->[0];
-    my %names = CHAINS;
+    my %offered;                                   # chain => tokens that can go there
+    for my $t (@$list) { push @{ $offered{$_} }, $t for @{ $t->{chains} } }
+    $s{chains} = [ grep { $offered{$_} } CHAIN_ORDER ];
+    ($s{chain}) = grep { defined $v->{chain} && !ref $v->{chain} && $_ eq $v->{chain} } @{ $s{chains} };
+    $s{list} = $s{chain} ? $offered{ $s{chain} } : [];
+    ($s{token}) = grep { defined $v->{token} && !ref $v->{token} && $_->{id} eq $v->{token} } @{ $s{list} };
     if ($s{token}) {
-        my %has = map { $_ => 1 } @{ $s{token}{chains} };
-        my @ok  = grep { $has{$_} } CHAIN_ORDER;
-        ($s{chain}) = grep { defined $v->{chain} && !ref $v->{chain} && $_ eq $v->{chain} } @ok;
-        $s{chains} = \@ok;
         my $a = $v->{ "amount_$s{token}{decimals}" };
         $s{amount} = "$a" if defined $a && !ref $a && "$a" =~ /^[1-9]\d{0,18}\z/;
     }
     my $to = $v->{to};
     if (defined $to && !ref $to) { $to =~ s/\s+//g; $s{to} = $to if $to =~ /^[A-Za-z0-9]{20,120}\z/ }
-    $s{list} = $list;
     return \%s;
 }
 
@@ -134,7 +132,7 @@ sub form_view {
         label('SigmaBridge', 'HEADLINE1', color => 'PRIMARY'),
         label('Send ERG and tokens from Ergo to another chain, over the Rosen bridge', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
     );
-    if (!$s->{token}) {
+    if (!@{ $s->{chains} }) {
         push @kids, label('The bridge is unavailable right now.', 'BODY1', talign => 'CENTER');
         return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
     }
@@ -144,20 +142,18 @@ sub form_view {
                     'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
     ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY');
     push @kids, child(card(column([
-        child(label('From: your Ergo address', 'BODY1BOLD'), align => 'START'),
+        child(label('Your Ergo wallet', 'BODY1BOLD'), align => 'START'),
         O(type => 'ErgoAddressChooseButton', id => 'address', value => $s->{address}, onValueChanged => 'clearResult',
           style => $s->{address} ? 'BUTTON_SECONDARY' : undef),
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
+    # same order as the Rosen app: source, target, target address, token, amount
     my $t = $s->{token};
     my @form = (
-        child(label('What to send', 'BODY1BOLD'), align => 'START'),
-        child(O(type => 'DropDownList', id => 'token', value => $t->{id}, onValueChanged => 'reform',
-                entries => O(map { $_->{id} => $_->{name} } @{ $s->{list} })), align => 'JUSTIFY'),
-        child(O(type => 'DecimalInputField', id => "amount_$t->{decimals}", value => defined $s->{amount} ? N($s->{amount}) : undef,
-                placeholder => "Amount of $t->{name}", onValueChanged => 'clearResult', minValue => N(1), scale => N($t->{decimals})), align => 'JUSTIFY'),
-        child(label('To which chain', 'BODY1BOLD'), align => 'START'),
-        child(O(type => 'DropDownList', id => 'chain', value => $s->{chain}, onValueChanged => 'reform', placeholder => 'Select chain',
+        child(label('Source', 'BODY1BOLD'), align => 'START'),
+        child(O(type => 'DropDownList', id => 'source', value => 'ergo', entries => O(ergo => 'Ergo')), align => 'JUSTIFY'),
+        child(label('Target', 'BODY1BOLD'), align => 'START'),
+        child(O(type => 'DropDownList', id => 'chain', value => $s->{chain}, onValueChanged => 'reform', placeholder => 'Select target chain',
                 entries => O(map { $_ => $names{$_} } @{ $s->{chains} })), align => 'JUSTIFY'),
     );
     if ($s->{chain}) {
@@ -165,11 +161,19 @@ sub form_view {
                      doge => 'starts with D', firo => 'starts with a', ethereum => 'starts with 0x', binance => 'starts with 0x');
         my $hint = $hints{ $s->{chain} };
         push @form,
-            child(label("Your $names{ $s->{chain} } address", 'BODY1BOLD'), align => 'START'),
-            child(O(type => 'TextInputField', id => 'to', value => $s->{to}, placeholder => "Address ($hint)",
+            child(label('Target address', 'BODY1BOLD'), align => 'START'),
+            child(O(type => 'TextInputField', id => 'to', value => $s->{to}, placeholder => "Your $names{ $s->{chain} } address ($hint)",
                     onValueChanged => 'clearResult', minValue => N(20), maxValue => N(120)), align => 'JUSTIFY'),
             child(label('Paste it; do not type it. Use an address of your own wallet on that chain, not an exchange deposit '
-                        . 'address unless the exchange accepts this token on this chain.', 'BODY2', color => 'SECONDARY'), align => 'START');
+                        . 'address unless the exchange accepts this token on this chain.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+            child(label('Token', 'BODY1BOLD'), align => 'START'),
+            child(O(type => 'DropDownList', id => 'token', value => $t ? $t->{id} : undef, onValueChanged => 'reform',
+                    placeholder => 'Select token', entries => O(map { $_->{id} => $_->{name} } @{ $s->{list} })), align => 'JUSTIFY');
+        push @form,
+            child(label('Amount', 'BODY1BOLD'), align => 'START'),
+            child(O(type => 'DecimalInputField', id => "amount_$t->{decimals}", value => defined $s->{amount} ? N($s->{amount}) : undef,
+                    placeholder => "Amount of $t->{name}", onValueChanged => 'clearResult', minValue => N(1), scale => N($t->{decimals})), align => 'JUSTIFY')
+            if $t;
     }
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
     push @kids, child(O(type => 'Box', id => 'result', children => [ button('Preview', 'preview') ]), align => 'JUSTIFY');
@@ -202,11 +206,11 @@ sub split_address {    # in groups of 6, so it can be compared by eye
 sub act_preview {
     my $s = state(posted_values());
     my %names = CHAINS;
-    return mosaik_dialog('The bridge is unavailable right now.')    unless $s->{token};
-    return mosaik_dialog('Choose your Ergo address first.')         unless $s->{address};
-    return mosaik_dialog('Enter the amount to send.')               unless defined $s->{amount};
-    return mosaik_dialog('Choose the chain to send to.')            unless $s->{chain};
+    return mosaik_dialog('Choose your Ergo wallet first.')            unless $s->{address};
+    return mosaik_dialog('Choose the target chain.')                  unless $s->{chain};
     return mosaik_dialog("Enter your $names{ $s->{chain} } address.") unless defined $s->{to};
+    return mosaik_dialog('Choose the token to send.')                 unless $s->{token};
+    return mosaik_dialog('Enter the amount to send.')                 unless defined $s->{amount};
 
     my $t = $s->{token};
     my $q = chain('bridgequote', { token => $t->{id}, chain => $s->{chain}, amount => $s->{amount}, to => $s->{to}, address => $s->{address} }, 60);
