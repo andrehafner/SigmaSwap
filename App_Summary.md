@@ -16,8 +16,8 @@
   NFT's media, which the server checks and relays to Lighthouse (IPFS/Filecoin).
 
 - **SigmaLP** (`sigmalp/`): add and remove liquidity on the same pools, one direct transaction each.
-- **SigmaBridge** (`sigmabridge/`): send ERG and tokens out of Ergo to Cardano, Ethereum, BNB Chain or
-  Bitcoin over the Rosen bridge (an independent project). The app builds Rosen's "lock" transaction.
+- **SigmaBridge** (`sigmabridge/`): send ERG and tokens out of Ergo to Cardano, Ethereum, BNB Chain, Bitcoin Runes,
+  Bitcoin, Dogecoin or Firo over the Rosen bridge (an independent project). The app builds Rosen's "lock" transaction.
 - **Order bot**: a systemd timer runs `sigmaswap.py bot` every minute. It completes orders placed
   through SigmaSwap when the pool can pay their minimum, by broadcasting a transaction that needs
   no key. This is the one place the server sends a transaction to the network itself.
@@ -130,7 +130,9 @@
   ErgoPay → `lpbuild` builds `[pool, user boxes] → [pool, user, miner fee]` under the pool's own
   deposit/redeem rules, evaluates the pool contract against it, and enforces a 1 % tolerance.
 - **SigmaBridge**: `POST sigmabridge/api.pl?action=preview` → `bridgequote` reads Rosen's on-chain
-  fee table for the token, validates the target address (checksum for the chosen chain), requires
+  fee table for the token, validates the target address with that chain's checksum and Rosen's own
+  format rules (Cardano bech32 mainnet; Bitcoin `bc1q`; Runes Taproot `bc1p`; EVM hex with EIP-55 when
+  mixed case; Dogecoin and Firo Base58Check), requires
   recent activity at the lock address → the previewed transfer is stored under a random id →
   ErgoPay → `bridgebuild` recomputes the fees (refuses if they rose), builds `[user boxes] → [lock
   box with R4 = chain, target address, fees, sender; change; miner fee]`, and reads the lock box

@@ -11,7 +11,7 @@
 #   ErgoPay
 #     GET  api.pl?action=ergopay&n=<id>&addr=<address>
 #
-# Out of Ergo only. A transfer is one transaction that locks the amount at Rosen's
+# Out of Ergo only, to every chain the Rosen app offers. A transfer is one transaction that locks the amount at Rosen's
 # lock address with the target chain and address attached; Rosen delivers it on
 # the other chain. A wrong target address or too low a fee is not refunded, so the
 # helper reads the fees from Rosen's on-chain table and checksums the address.
@@ -28,8 +28,10 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 1;
-use constant CHAINS      => (cardano => 'Cardano', ethereum => 'Ethereum', binance => 'BNB Chain', bitcoin => 'Bitcoin');
+use constant APP_VERSION => 2;
+use constant CHAINS      => (cardano => 'Cardano', ethereum => 'Ethereum', binance => 'BNB Chain', 'bitcoin-runes' => 'Bitcoin Runes',
+                            bitcoin => 'Bitcoin', doge => 'Dogecoin', firo => 'Firo');
+use constant CHAIN_ORDER => qw(cardano ethereum binance bitcoin-runes bitcoin doge firo);    # same order as the Rosen app
 
 $CGI::POST_MAX        = 64 * 1024;
 $CGI::DISABLE_UPLOADS = 1;
@@ -89,7 +91,8 @@ sub state {    # the form's values, reduced to known-good ones
     $s{token} ||= $list->[0];
     my %names = CHAINS;
     if ($s{token}) {
-        my @ok = grep { $names{$_} } @{ $s{token}{chains} };
+        my %has = map { $_ => 1 } @{ $s{token}{chains} };
+        my @ok  = grep { $has{$_} } CHAIN_ORDER;
         ($s{chain}) = grep { defined $v->{chain} && !ref $v->{chain} && $_ eq $v->{chain} } @ok;
         $s{chains} = \@ok;
         my $a = $v->{ "amount_$s{token}{decimals}" };
@@ -158,9 +161,9 @@ sub form_view {
                 entries => O(map { $_ => $names{$_} } @{ $s->{chains} })), align => 'JUSTIFY'),
     );
     if ($s->{chain}) {
-        my $hint = $s->{chain} eq 'cardano' ? 'starts with addr1'
-                 : $s->{chain} eq 'bitcoin' ? 'must start with bc1q'
-                 :                            'starts with 0x';
+        my %hints = (cardano => 'starts with addr1', bitcoin => 'must start with bc1q', 'bitcoin-runes' => 'Taproot: must start with bc1p',
+                     doge => 'starts with D', firo => 'starts with a', ethereum => 'starts with 0x', binance => 'starts with 0x');
+        my $hint = $hints{ $s->{chain} };
         push @form,
             child(label("Your $names{ $s->{chain} } address", 'BODY1BOLD'), align => 'START'),
             child(O(type => 'TextInputField', id => 'to', value => $s->{to}, placeholder => "Address ($hint)",

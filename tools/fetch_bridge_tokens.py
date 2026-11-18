@@ -16,7 +16,7 @@ import json
 import os
 import sys
 
-CHAINS = ("cardano", "ethereum", "binance", "bitcoin")      # keep in step with BRIDGE_CHAINS in sigmaswap.py
+CHAINS = ("cardano", "ethereum", "binance", "bitcoin-runes", "bitcoin", "doge", "firo")      # keep in step with BRIDGE_CHAINS in sigmaswap.py
 
 
 def main():

@@ -1179,13 +1179,14 @@ ROSEN_MINFEE_NFT = "e2ed4d64393222db666f20e67803e9e6fbe6d64531e14ff52ddd95615b0c
 ROSEN_LOCK_BOX_VALUE = 2000000          # nanoERG carried by a token lock box (what the Rosen app uses)
 ROSEN_FEE_RATIO_DIVISOR = 10000
 ROSEN_MAX_IDLE_DAYS = 10
-BRIDGE_CHAINS = ("cardano", "ethereum", "binance", "bitcoin")     # targets whose addresses we can verify
+BRIDGE_CHAINS = ("cardano", "ethereum", "binance", "bitcoin-runes", "bitcoin", "doge", "firo")   # every target is checksum-verified
 
 _BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 
 
-def _bech32_decode(addr):
-    """-> (hrp, data5 without checksum) for a valid bech32 (not bech32m) string, else None."""
+def _bech32_decode(addr, const=1):
+    """-> (hrp, data5 without checksum) for a valid bech32 string, else None.
+    const=1 is bech32; const=0x2bc830a3 is bech32m (Taproot addresses)."""
     if addr != addr.lower() or "1" not in addr:
         return None
     pos = addr.rfind("1")
@@ -1200,7 +1201,23 @@ def _bech32_decode(addr):
         for i, g in enumerate((0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3)):
             if (top >> i) & 1:
                 chk ^= g
-    return (hrp, data[:-6]) if chk == 1 else None
+    return (hrp, data[:-6]) if chk == const else None
+
+
+def _base58check(addr):
+    """-> (version byte, payload) for a valid Base58Check string, else None."""
+    import hashlib
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    n = 0
+    for c in addr:
+        if c not in alphabet:
+            return None
+        n = n * 58 + alphabet.index(c)
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    raw = b"\x00" * (len(addr) - len(addr.lstrip("1"))) + raw
+    if len(raw) < 5 or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
+        return None
+    return raw[0], raw[1:-4]
 
 
 def _convert_bits(data, frm, to):
@@ -1252,7 +1269,8 @@ def bridge_target_address(chain, raw):
     """Validate a target-chain address. -> the address exactly as it goes into the lock box."""
     a = raw.strip() if isinstance(raw, str) else ""
     bad = SwapError("That is not a valid %s address. Check it carefully: a wrong address cannot be corrected."
-                    % {"cardano": "Cardano", "ethereum": "Ethereum", "binance": "BNB Chain", "bitcoin": "Bitcoin"}.get(chain, chain))
+                    % {"cardano": "Cardano", "ethereum": "Ethereum", "binance": "BNB Chain", "bitcoin": "Bitcoin",
+                       "bitcoin-runes": "Bitcoin Runes (Taproot)", "doge": "Dogecoin", "firo": "Firo"}.get(chain, chain))
     if not a or len(a) > 120 or not a.isascii() or not a.isalnum():
         raise bad
     if chain == "cardano":
@@ -1269,8 +1287,20 @@ def bridge_target_address(chain, raw):
         if not dec or dec[0] != "bc" or not dec[1] or dec[1][0] != 0:
             raise SwapError("Use a Bitcoin address that starts with bc1q (native SegWit). Other formats are not supported by the bridge.")
         prog = _convert_bits(dec[1][1:], 5, 8)
-        if not prog or len(prog) != 20:
+        if not prog or len(prog) not in (20, 32):
             raise SwapError("Use a Bitcoin address that starts with bc1q (native SegWit). Other formats are not supported by the bridge.")
+        return a
+    if chain == "bitcoin-runes":                 # Rosen accepts Taproot only: bc1p..., bech32m, 32-byte key
+        dec = _bech32_decode(a, 0x2bc830a3)
+        prog = _convert_bits(dec[1][1:], 5, 8) if dec and dec[1] else None
+        if not dec or dec[0] != "bc" or dec[1][0] != 1 or not prog or len(prog) != 32:
+            raise SwapError("Use a Taproot address that starts with bc1p. Runes can only be received at Taproot addresses.")
+        return a
+    if chain in ("doge", "firo"):
+        dec = _base58check(a)
+        versions = (0x1e, 0x16) if chain == "doge" else (0x52,)      # Doge P2PKH / P2SH; Firo P2PKH
+        if not dec or dec[0] not in versions or len(dec[1]) != 20:
+            raise bad
         return a
     if chain in ("ethereum", "binance"):
         if len(a) != 42 or not a.startswith("0x") or any(c not in "0123456789abcdefABCDEF" for c in a[2:]):
