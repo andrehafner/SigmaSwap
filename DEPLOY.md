@@ -137,6 +137,9 @@ cd /data/AAP_Storage/apps/sigmaswap && sudo git pull && sudo ./redeploy.sh
 If the Mosaik screen changed, bump `APP_VERSION` in `api.pl`: wallets that have the app open then
 reload it instead of mixing old and new screens.
 
+Order mode (v2) needs nothing new on the server: no new packages, no SELinux or Apache changes.
+The optional `ORDER_*` keys are described in `sigmaswap.env.example`.
+
 ## Troubleshooting
 
 Always read **`/var/log/httpd/ssl_error_log`** (not `error_log`). Lines from this app start with
@@ -181,6 +184,12 @@ pools.json never appears (G5)
 
 Wallet shows "The pool did not accept this swap" / "price moved beyond your slippage tolerance"
   -> normal protection: the pool changed between preview and signing. Preview again.
+
+Order placed but not executed after several minutes
+  -> the pool price is below the order's minimum, or the ErgoDex bots are not running. The funds
+     are safe in the order box: "My open orders" -> "Cancel and refund" returns them.
+  -> "My open orders" is empty right after placing an order: the explorer lists it once the
+     transaction has confirmed (about 2 minutes), and removes it once it is executed.
 
 Wallet: transaction rejected after signing ("double spending" / "inputs not found")
   -> somebody else's swap hit the same pool box first, or the wallet's previous transaction is

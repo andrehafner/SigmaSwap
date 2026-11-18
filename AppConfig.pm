@@ -75,6 +75,8 @@ sub chain {
         pools_api_url => cfg('POOLS_API_URL', 'https://api.ergodex.io/v1/amm/pools/stats'),
         min_tvl_usd   => cfg('MIN_TVL_USD',   100) + 0,
         miner_fee     => cfg('MINER_FEE',     1100000) + 0,
+        order_min_ex_fee => cfg('ORDER_MIN_EX_FEE', 6000000) + 0,
+        order_miner_fee  => cfg('ORDER_MINER_FEE',  2000000) + 0,
     };
     my $python = cfg('PYTHON', "$FindBin::Bin/venv/bin/python");
     my $script = "$FindBin::Bin/sigmaswap.py";

@@ -261,6 +261,10 @@ def cmd_quote(req):
         "impact_bps": impact_bps(amount, out, r_in, r_out, pool.fee_num),
         "reserve_in": str(r_in), "reserve_out": str(r_out),
     }
+    if pool.kind == "n2t":
+        op = order_params(cfg)
+        res["order"] = {"min_ex_fee": str(op["min_ex_fee"]), "max_ex_fee": str(op["max_ex_fee"]),
+                        "extra": str(op["extra"])}
     if req.get("address"):
         req_address(req["address"])
         res["balance"] = _balance(cfg, req["address"], from_id)
@@ -351,9 +355,76 @@ def select_inputs(boxes, need_erg, need_token_id, need_token_amt):
         chosen.append(remaining.pop(0))
 
 
+def miner_fee(cfg):
+    fee = int(cfg.get("miner_fee", 1100000))
+    if not (1000000 <= fee <= 100000000):
+        raise SwapError("Service misconfigured.")
+    return fee
+
+
+def chain_context(cfg):
+    """-> (ErgoStateContext, current height) from the last 10 block headers."""
+    from ergo_lib_python.chain import ErgoStateContext, Header, Parameters, PreHeader
+    headers = [Header.from_json(h) for h in (explorer(cfg, "blocks/headers?limit=10") or {}).get("items", [])]
+    if len(headers) != 10:
+        raise SwapError("Blockchain data is unavailable right now. Please try again.")
+    return ErgoStateContext(PreHeader(headers[0]), headers, Parameters.default()), headers[0].height
+
+
+def new_pool_candidate(pool, from_id, amount, out, height):
+    """The pool box after a swap: identical script/registers/token ids, only reserves change."""
+    from ergo_lib_python.chain import ErgoBoxCandidate, Token, TokenId
+    new_tokens = list(pool.tokens)
+    new_value = pool.box.value
+    if pool.kind == "n2t":
+        if from_id == ERG_ID:
+            new_value += amount
+            new_tokens[2] = (pool.y_id, pool.y_amt - out)
+        else:
+            new_value -= out
+            new_tokens[2] = (pool.y_id, pool.y_amt + amount)
+    else:
+        if from_id == pool.x_id:
+            new_tokens[2] = (pool.x_id, pool.x_amt + amount)
+            new_tokens[3] = (pool.y_id, pool.y_amt - out)
+        else:
+            new_tokens[2] = (pool.x_id, pool.x_amt - out)
+            new_tokens[3] = (pool.y_id, pool.y_amt + amount)
+    return ErgoBoxCandidate(
+        value=new_value, script=pool.box.ergo_tree, creation_height=height,
+        tokens=[Token(TokenId(t), a) for t, a in new_tokens],
+        registers=pool.registers)
+
+
+def change_need(n_tokens):
+    """nanoERG needed to carry `n_tokens` distinct tokens back to the user."""
+    extra_boxes = max(0, (n_tokens - 1) // MAX_TOKENS_PER_BOX)
+    return (change_box_min_value(min(n_tokens, MAX_TOKENS_PER_BOX))
+            + extra_boxes * change_box_min_value(MAX_TOKENS_PER_BOX))
+
+
+def user_outputs(address, height, out_toks, out_erg, first_token=None):
+    """Box(es) returning `out_erg` + `out_toks` to the user (split when there are many tokens)."""
+    from ergo_lib_python.chain import ErgoBoxCandidate, Token, TokenId
+    # `first_token` (the received token) first, so it is the first thing the wallet shows
+    tok_list = sorted(((t, a) for t, a in out_toks.items() if a > 0), key=lambda kv: (kv[0] != first_token, kv[0]))
+    chunks = [tok_list[i:i + MAX_TOKENS_PER_BOX] for i in range(0, len(tok_list), MAX_TOKENS_PER_BOX)] or [[]]
+    extra_value = change_box_min_value(MAX_TOKENS_PER_BOX)
+    main_value = out_erg - extra_value * (len(chunks) - 1)
+    if main_value < change_box_min_value(len(chunks[0])):
+        raise SwapError("Insufficient ERG on this address for the swap plus network fee.")
+    outs = []
+    for i, chunk in enumerate(chunks):
+        outs.append(ErgoBoxCandidate(
+            value=main_value if i == 0 else extra_value, script=address.ergo_tree(),
+            creation_height=height, tokens=[Token(TokenId(t), a) for t, a in chunk]))
+    return outs
+
+
 def cmd_build(req):
-    from ergo_lib_python.chain import (ErgoBoxCandidate, ErgoStateContext, Header, Parameters,
-                                       PreHeader, Token, TokenId, NetworkPrefix)
+    if req.get("mode") == "order":
+        return build_order(req)
+    from ergo_lib_python.chain import NetworkPrefix
     from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
     from ergo_lib_python.wallet import BoxSelection, Wallet
 
@@ -364,9 +435,7 @@ def cmd_build(req):
     min_out = req_amount(req.get("min_out"), "minimum output")
     address = req_address(req.get("address"))
     addr_str = address.to_str(NetworkPrefix.Mainnet)
-    fee = int(cfg.get("miner_fee", 1100000))
-    if not (1000000 <= fee <= 100000000):
-        raise SwapError("Service misconfigured.")
+    fee = miner_fee(cfg)
 
     pool = load_pool(cfg, pool_id)
     to_id, out, r_in, r_out = pool.quote(from_id, amount)
@@ -384,72 +453,28 @@ def cmd_build(req):
 
     def need_erg(toks):
         n = len(set(toks) | ({to_id} if to_id != ERG_ID else set()))
-        extra_boxes = max(0, (n - 1) // MAX_TOKENS_PER_BOX)
-        need = erg_in + fee - erg_out
-        need += change_box_min_value(min(n, MAX_TOKENS_PER_BOX))
-        need += extra_boxes * change_box_min_value(MAX_TOKENS_PER_BOX)
-        return need
+        return erg_in + fee - erg_out + change_need(n)
 
     user_boxes = fetch_user_boxes(cfg, addr_str)
     if not user_boxes:
         raise SwapError("No funds found on this address.")
     chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, sell_token, amount)
 
-    headers = [Header.from_json(h) for h in (explorer(cfg, "blocks/headers?limit=10") or {}).get("items", [])]
-    if len(headers) != 10:
-        raise SwapError("Blockchain data is unavailable right now. Please try again.")
-    height = headers[0].height
-
-    # ---- new pool box: identical script/registers/token ids, only reserves change
-    new_tokens = list(pool.tokens)
-    new_value = pool.box.value
-    if pool.kind == "n2t":
-        if from_id == ERG_ID:
-            new_value += amount
-            new_tokens[2] = (pool.y_id, pool.y_amt - out)
-        else:
-            new_value -= out
-            new_tokens[2] = (pool.y_id, pool.y_amt + amount)
-    else:
-        if from_id == pool.x_id:
-            new_tokens[2] = (pool.x_id, pool.x_amt + amount)
-            new_tokens[3] = (pool.y_id, pool.y_amt - out)
-        else:
-            new_tokens[2] = (pool.x_id, pool.x_amt - out)
-            new_tokens[3] = (pool.y_id, pool.y_amt + amount)
-    pool_out = ErgoBoxCandidate(
-        value=new_value, script=pool.box.ergo_tree, creation_height=height,
-        tokens=[Token(TokenId(t), a) for t, a in new_tokens],
-        registers=pool.registers)
+    ctx, height = chain_context(cfg)
+    pool_out = new_pool_candidate(pool, from_id, amount, out, height)
 
     # ---- user output(s): swap result + all change, back to the same address
     out_toks = dict(user_toks)
     if sell_token is not None:
         out_toks[sell_token] -= amount
-        if out_toks[sell_token] == 0:
-            del out_toks[sell_token]
     if to_id != ERG_ID:
         out_toks[to_id] = out_toks.get(to_id, 0) + out
-    out_erg = user_erg - erg_in + erg_out - fee
-
-    # received token first so it is the first thing the wallet shows
-    tok_list = sorted(out_toks.items(), key=lambda kv: (kv[0] != to_id, kv[0]))
-    chunks = [tok_list[i:i + MAX_TOKENS_PER_BOX] for i in range(0, len(tok_list), MAX_TOKENS_PER_BOX)] or [[]]
-    extra_value = change_box_min_value(MAX_TOKENS_PER_BOX)
-    main_value = out_erg - extra_value * (len(chunks) - 1)
-    if main_value < change_box_min_value(len(chunks[0])):
-        raise SwapError("Insufficient ERG on this address for the swap plus network fee.")
-    user_outs = []
-    for i, chunk in enumerate(chunks):
-        user_outs.append(ErgoBoxCandidate(
-            value=main_value if i == 0 else extra_value, script=address.ergo_tree(),
-            creation_height=height, tokens=[Token(TokenId(t), a) for t, a in chunk]))
+    user_outs = user_outputs(address, height, out_toks, user_erg - erg_in + erg_out - fee, to_id)
 
     inputs = [pool.box] + chosen
     builder = TxBuilder(BoxSelection(inputs, []), [pool_out] + user_outs, height, fee, address)
     unsigned = builder.build()      # refuses unbalanced ERG/tokens (no silent burn, no surprise change)
 
-    ctx = ErgoStateContext(PreHeader(headers[0]), headers, Parameters.default())
     # Prove the pool contract accepts this exact transaction BEFORE handing it to
     # a wallet: "sign" the pool input with a wallet that holds no keys. That only
     # succeeds when the pool script evaluates to true for this transaction. (Do
@@ -465,10 +490,312 @@ def cmd_build(req):
     return {
         "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
         "tx_id": hexid(unsigned.id),
-        "address": addr_str,
+        "address": addr_str, "mode": "direct",
         "pool": pool.nft, "from": from_id, "to": to_id,
         "amount": str(amount), "out": str(out), "miner_fee": str(fee),
         "inputs": len(inputs), "height": height,
+    }
+
+
+# ---------------------------------------------------------------- orders ----
+# "Order" mode = the classic ErgoDex flow. Instead of touching the pool, the user
+# sends the funds to a swap-order box. ErgoDex's off-chain bots execute it against
+# the pool (retrying as the pool moves), and the order contract guarantees the
+# user gets at least `min_out` at the pool's own price, or the user cancels and
+# takes everything back with their own signature. Never fails on a busy pool.
+#
+# The two contracts below are the ErgoDex native-fee ERG<->token swap orders
+# (ergo-dex-sdk-js: nativeFee/n2tTemplates SwapSellSample / SwapBuySample). Trees
+# built from them were checked byte-for-byte against orders the bots executed.
+
+ORDER_SELL_SAMPLE = "19c4031808d2040005e012040404060402040004000e2002020202020202020202020202020202020202020202020202020202020202020e20010101010101010101010101010101010101010101010101010101010101010105c00c05040514040404c80f06010104d00f05e01204c80f0e691005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a573040500050005a09c010100d803d6017300d602b2a4730100d6037302eb027201d195ed92b1a4730393b1db630872027304d804d604db63087202d605b2a5730500d606b2db63087205730600d6077e8c72060206edededededed938cb2720473070001730893c27205d07201938c72060173099272077e730a06927ec172050699997ec1a7069d9c72077e730b067e730c067e720306909c9c7e8cb27204730d0002067e7203067e730e069c9a7207730f9a9c7ec17202067e7310067e9c73117e7312050690b0ada5d90108639593c272087313c1720873147315d90108599a8c7208018c72080273167317"
+ORDER_BUY_SAMPLE = "1980031508d2040004040406040205140512040004000e20020202020202020202020202020202020202020202020202020202020202020205c00c04c80f060101040404d00f04c80f0e691005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a573040500050005a09c010100d802d6017300d602b2a4730100eb027201d195ed92b1a4730293b1db630872027303d804d603db63087202d604b2a5730400d6059d9c7e99c17204c1a7067e7305067e730606d6068cb2db6308a773070002edededed938cb2720373080001730993c27204d072019272057e730a06909c9c7ec17202067e7206067e730b069c9a7205730c9a9c7e8cb27203730d0002067e730e067e9c72067e730f050690b0ada5d90107639593c272077310c1720773117312d90107599a8c7207018c72070273137314"
+# sha256 of each contract with its constants removed: how the explorer indexes orders
+ORDER_SELL_TEMPLATE_HASH = "36d1944fe6d743312e93541a1daf5592519772310ce924b2ec10e3f9b450e13a"
+ORDER_BUY_TEMPLATE_HASH = "be1312f720ad4de7a8528a0306478292e48fdc996d44e9014f704632b512b691"
+
+# positions of the per-order constants inside each contract
+SELL_IDX = {"pk": 0, "base": (2, 17), "pool": 8, "quote": 9, "min_out": 10,
+            "fee_num": 11, "fee_den": 12, "pool_fee": (14, 18), "max_miner_fee": 22}
+BUY_IDX = {"pk": 0, "fee_den": 5, "fee_den_minus_num": 6, "pool": 9, "min_out": 10,
+           "pool_fee": (11, 15), "max_miner_fee": 19}
+
+ORDER_BOX_RESERVE = 60000        # nanoERG kept in the order box on top of the execution fee
+MAX_ORDERS_SCANNED = 400
+
+
+def order_params(cfg):
+    """Execution-fee settings. Defaults are what the ErgoDex web UI uses."""
+    min_fee = int(cfg.get("order_min_ex_fee", 6000000))
+    exec_fee = int(cfg.get("order_miner_fee", 2000000))
+    if not (exec_fee < min_fee <= 1000000000 and 1000000 <= exec_fee):
+        raise SwapError("Service misconfigured.")
+    max_fee = min_fee * 12 // 10                    # covers up to 20 % more output than the minimum
+    return {"min_ex_fee": min_fee, "max_ex_fee": max_fee, "exec_miner_fee": exec_fee,
+            "extra": max_fee + ORDER_BOX_RESERVE}
+
+
+def pk_constant(address):
+    """The address's public key as a SigmaProp constant (first constant of an order)."""
+    from ergo_lib_python.chain import Constant
+    return Constant.from_bytes(bytes(address.ergo_tree())[1:])
+
+
+def order_terms(pool, from_id, amount, min_out, op):
+    """Everything that defines an order for this swap. Raises when an order makes no sense."""
+    if pool.kind != "n2t":
+        raise SwapError("Orders are only available for pairs with ERG. Use a direct swap for this pair.")
+    if from_id == ERG_ID:
+        kind, to_id = "sell", pool.y_id
+        # execution fee = received tokens * num / den, sized so it is min_ex_fee at min_out
+        den = 10 ** 18
+        num = -(-op["min_ex_fee"] * den // min_out)
+        while num >= 2 ** 63 and den > 1:
+            den //= 10
+            num = -(-op["min_ex_fee"] * den // min_out)
+        if num >= 2 ** 63:
+            raise SwapError("This amount is too small for an order. Use a direct swap.")
+        return {"kind": kind, "to": to_id, "fee_num": num, "fee_den": den,
+                "box_value": amount + op["extra"], "box_tokens": []}
+    if from_id != pool.y_id:
+        raise SwapError("That token is not part of this pool.")
+    # buying ERG: the fee is a share of the ERG received, so the order must be worth a few fees
+    if min_out < 3 * op["max_ex_fee"]:
+        raise SwapError("This amount is too small for an order (the execution fee would eat it). "
+                        "Use a direct swap.")
+    den = 10 ** 18
+    num = -(-op["min_ex_fee"] * den // min_out)
+    return {"kind": "buy", "to": ERG_ID, "fee_num": num, "fee_den": den,
+            "box_value": op["extra"], "box_tokens": [(from_id, amount)]}
+
+
+def order_tree(terms, pool, pk_const, amount, min_out, op):
+    from ergo_lib_python.chain import Constant
+    from ergo_lib_python.ergo_tree import ErgoTree
+    i64, i32 = Constant.from_i64, Constant.from_i32
+    if terms["kind"] == "sell":
+        tree, ix = ErgoTree.from_bytes(bytes.fromhex(ORDER_SELL_SAMPLE)), SELL_IDX
+        sets = [(ix["pk"], pk_const), (ix["base"][0], i64(amount)), (ix["base"][1], i64(amount)),
+                (ix["pool"], Constant(bytes.fromhex(pool.nft))), (ix["quote"], Constant(bytes.fromhex(pool.y_id))),
+                (ix["min_out"], i64(min_out)), (ix["fee_num"], i64(terms["fee_num"])),
+                (ix["fee_den"], i64(terms["fee_den"])),
+                (ix["pool_fee"][0], i32(pool.fee_num)), (ix["pool_fee"][1], i32(pool.fee_num)),
+                (ix["max_miner_fee"], i64(op["exec_miner_fee"]))]
+    else:
+        tree, ix = ErgoTree.from_bytes(bytes.fromhex(ORDER_BUY_SAMPLE)), BUY_IDX
+        sets = [(ix["pk"], pk_const), (ix["fee_den"], i64(terms["fee_den"])),
+                (ix["fee_den_minus_num"], i64(terms["fee_den"] - terms["fee_num"])),
+                (ix["pool"], Constant(bytes.fromhex(pool.nft))), (ix["min_out"], i64(min_out)),
+                (ix["pool_fee"][0], i32(pool.fee_num)), (ix["pool_fee"][1], i32(pool.fee_num)),
+                (ix["max_miner_fee"], i64(op["exec_miner_fee"]))]
+    for idx, const in sets:
+        tree = tree.with_constant(idx, const)
+    return tree
+
+
+def simulate_execution(pool, order_box, terms, address, amount, min_out, op, ctx, height):
+    """Build the transaction a bot would build to execute `order_box` right now and
+    check that BOTH the pool and the order contract accept it.
+
+    This is the proof that the order is not a dead end: at the current pool price a
+    standard execution is valid. Returns (tokens/nanoERG the user would receive,
+    execution fee). Raises SwapError if the order could not be executed as-is.
+    """
+    from ergo_lib_python.chain import ErgoBoxCandidate, Token, TokenId
+    from ergo_lib_python.transaction import TxBuilder
+    from ergo_lib_python.wallet import BoxSelection, Wallet
+    from_id = ERG_ID if terms["kind"] == "sell" else pool.y_id
+    to_id, out, _r_in, r_out = pool.quote(from_id, amount)
+    if out < min_out or out >= r_out:
+        raise SwapError("The price moved beyond your slippage tolerance. Please preview the swap again.")
+    try:
+        if terms["kind"] == "sell":
+            ex_fee = out * terms["fee_num"] // terms["fee_den"]
+            reward = ErgoBoxCandidate(value=order_box.value - amount - ex_fee, script=address.ergo_tree(),
+                                      creation_height=height, tokens=[Token(TokenId(to_id), out)])
+        else:
+            # round the user's share UP: the contract re-derives the gross amount from it
+            # with a floor division and must arrive back at (at least) the pool's output
+            net = -(-out * (terms["fee_den"] - terms["fee_num"]) // terms["fee_den"])
+            ex_fee = out - net
+            reward = ErgoBoxCandidate(value=order_box.value + net, script=address.ergo_tree(),
+                                      creation_height=height)
+        if not (op["exec_miner_fee"] < ex_fee <= op["max_ex_fee"]):
+            raise ValueError("execution fee %d outside the funded range" % ex_fee)
+        bot = ErgoBoxCandidate(value=ex_fee - op["exec_miner_fee"], script=address.ergo_tree(),
+                               creation_height=height)      # any address: the contract does not care
+        pool_out = new_pool_candidate(pool, from_id, amount, out, height)
+        inputs = [pool.box, order_box]
+        tx = TxBuilder(BoxSelection(inputs, []), [pool_out, reward, bot], height,
+                       op["exec_miner_fee"], address).build()
+        Wallet([]).sign_tx_input(tx, 0, inputs, [], ctx)      # pool accepts
+        Wallet([]).sign_tx_input(tx, 1, inputs, [], ctx)      # order accepts, with no user key
+    except SwapError:
+        raise
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: order simulation failed for pool %s: %s\n" % (pool.nft, str(e)[:300]))
+        raise SwapError("This order could not be executed at the current price. "
+                        "Please preview again or use a direct swap.")
+    return (out if terms["kind"] == "sell" else net), ex_fee
+
+
+def build_order(req):
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix, Token, TokenId
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+
+    cfg = req["cfg"]
+    pool_id = req_token_id(req.get("pool"), "pool")
+    from_id = req_token_id(req.get("from"), "token")
+    amount = req_amount(req.get("amount"), "amount")
+    min_out = req_amount(req.get("min_out"), "minimum output")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    op = order_params(cfg)
+
+    pool = load_pool(cfg, pool_id)
+    terms = order_terms(pool, from_id, amount, min_out, op)
+    sell_token = None if from_id == ERG_ID else from_id
+
+    def need_erg(toks):
+        n = len(set(toks) - ({sell_token} if sell_token and toks.get(sell_token) == amount else set()))
+        return terms["box_value"] + fee + change_need(n)
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, sell_token, amount)
+
+    ctx, height = chain_context(cfg)
+    order_out = ErgoBoxCandidate(
+        value=terms["box_value"], script=order_tree(terms, pool, pk_constant(address), amount, min_out, op),
+        creation_height=height, tokens=[Token(TokenId(t), a) for t, a in terms["box_tokens"]])
+
+    out_toks = dict(user_toks)
+    if sell_token is not None:
+        out_toks[sell_token] -= amount
+    user_outs = user_outputs(address, height, out_toks, user_erg - terms["box_value"] - fee)
+
+    unsigned = TxBuilder(BoxSelection(chosen, []), [order_out] + user_outs, height, fee, address).build()
+
+    # the order box exactly as it will exist once this transaction confirms
+    order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 0)
+    out, ex_fee = simulate_execution(pool, order_box, terms, address, amount, min_out, op, ctx, height)
+
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id),
+        "address": addr_str, "mode": "order",
+        "pool": pool.nft, "from": from_id, "to": terms["to"],
+        "amount": str(amount), "out": str(out), "min_out": str(min_out),
+        "ex_fee": str(ex_fee), "max_ex_fee": str(op["max_ex_fee"]), "miner_fee": str(fee),
+        "inputs": len(chosen), "height": height,
+    }
+
+
+def parse_order(box_json, pk_bytes=None):
+    """Recognise one of OUR two order contracts. -> dict, or None for anything else.
+
+    A box counts only if its script is exactly the known contract with different
+    constants (rebuilt and compared byte-for-byte), and, when `pk_bytes` is given,
+    only if it belongs to that public key.
+    """
+    from ergo_lib_python.chain import ErgoBox
+    from ergo_lib_python.ergo_tree import ErgoTree
+    try:
+        box = ErgoBox.from_json(box_json)
+        tree = box.ergo_tree
+        consts = tree.constants()
+        raw = bytes(tree)
+        for kind, sample, ix in (("sell", ORDER_SELL_SAMPLE, SELL_IDX), ("buy", ORDER_BUY_SAMPLE, BUY_IDX)):
+            ref = ErgoTree.from_bytes(bytes.fromhex(sample))
+            if len(ref.constants()) != len(consts):
+                continue
+            positions = []
+            for v in ix.values():
+                positions.extend(v if isinstance(v, tuple) else (v,))
+            for p in positions:
+                ref = ref.with_constant(p, consts[p])
+            if bytes(ref) != raw:
+                continue
+            if pk_bytes is not None and bytes(consts[ix["pk"]]) != pk_bytes:
+                return None
+            toks = [(hexid(t.token_id), t.amount) for t in box.tokens]
+            if kind == "sell":
+                amount, from_id, to_id = consts[ix["base"][0]].value, ERG_ID, bytes(consts[ix["quote"]].value).hex()
+            else:
+                if len(toks) != 1:
+                    return None
+                (from_id, amount), to_id = toks[0], ERG_ID
+            return {"box": box, "box_id": hexid(box.box_id), "kind": kind,
+                    "pool": bytes(consts[ix["pool"]].value).hex(),
+                    "from": from_id, "to": to_id, "amount": str(amount),
+                    "min_out": str(consts[ix["min_out"]].value), "value": str(box.value)}
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: skipped unreadable order box: %s\n" % str(e)[:200])
+    return None
+
+
+def cmd_orders(req):
+    """Open (unexecuted) swap orders of one address, found on-chain - nothing is stored here."""
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    pk = bytes(pk_constant(address))
+    found = []
+    for template_hash in (ORDER_SELL_TEMPLATE_HASH, ORDER_BUY_TEMPLATE_HASH):
+        offset = 0
+        while offset < MAX_ORDERS_SCANNED:
+            page = explorer(cfg, "boxes/unspent/byErgoTreeTemplateHash/%s?limit=100&offset=%d"
+                            % (template_hash, offset)) or {}
+            items = page.get("items") or []
+            for b in items:
+                # cheap pre-filter: the key is embedded in the script
+                if pk.hex() not in (b.get("ergoTree") or ""):
+                    continue
+                o = parse_order(b, pk)
+                if o:
+                    del o["box"]
+                    o["height"] = int(b.get("settlementHeight") or 0)
+                    found.append(o)
+            offset += 100
+            if len(items) < 100:
+                break
+    found.sort(key=lambda o: -o["height"])
+    return {"orders": found[:20]}
+
+
+def cmd_refund(req):
+    """Cancel an open order: the owner takes the whole order box back (minus the miner fee)."""
+    from ergo_lib_python.chain import ErgoBoxCandidate, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    box_id = req_token_id(req.get("box"), "order")
+    fee = miner_fee(cfg)
+
+    b = explorer(cfg, "boxes/" + box_id)
+    if not b or b.get("spentTransactionId"):
+        raise SwapError("This order is no longer open: it was already executed or cancelled.")
+    o = parse_order(b, bytes(pk_constant(address)))
+    if not o:
+        raise SwapError("This order does not belong to the selected address.")
+    box = o["box"]
+    if box.value - fee < change_box_min_value(len(box.tokens)):
+        raise SwapError("This order box is too small to pay the network fee for a refund.")
+
+    ctx, height = chain_context(cfg)
+    back = ErgoBoxCandidate(value=box.value - fee, script=address.ergo_tree(),
+                            creation_height=height, tokens=list(box.tokens))
+    unsigned = TxBuilder(BoxSelection([box], []), [back], height, fee, address).build()
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, [box], [], ctx)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id), "address": addr_str, "mode": "refund",
+        "from": o["from"], "amount": o["amount"], "value": str(box.value - fee), "miner_fee": str(fee),
     }
 
 
@@ -484,7 +811,8 @@ def cmd_health(req):
     return res
 
 
-COMMANDS = {"health": cmd_health, "pools": cmd_pools,"quote": cmd_quote, "balance": cmd_balance, "build": cmd_build}
+COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balance": cmd_balance,
+            "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund}
 
 
 def main():

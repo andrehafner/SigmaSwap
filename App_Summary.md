@@ -4,14 +4,16 @@
 
 - A Mosaik dApp (runs inside the Ergo wallet app) that swaps ERG and Ergo tokens against the
   ErgoDex liquidity pools. Swaps only — no liquidity provision, no order book.
+- Two ways to execute a swap: **direct** (one transaction against the pool) or, for ERG pairs,
+  an **order** (funds go into an ErgoDex swap-order contract that ErgoDex's bots execute).
 - Used by anyone with an Ergo wallet. It is public: no Cornell login, no accounts.
 - The server prepares an unsigned transaction; the user's wallet displays and signs it (ErgoPay).
   The server never holds keys or funds and stores no user data.
 
 ## 2. Roles & permissions
 
-- **Anonymous user** (the only role): view pairs, get a quote, request a swap transaction for an
-  address they choose.
+- **Anonymous user** (the only role): view pairs, get a quote, request a swap / order / order-refund
+  transaction for an address they choose, list the open orders of an address.
 - No admin role, no admin pages, no permission table. Configuration is changed only by a server
   administrator editing the env file.
 - What protects a user's funds is their wallet signature, not this app: a transaction built for an
@@ -45,7 +47,20 @@
   selects the address's boxes, builds `[pool, user boxes] → [new pool, user change, miner fee]`,
   proves the pool contract accepts it, reduces it → `{reducedTx, address, message}` → wallet shows
   the transaction → user signs → wallet broadcasts. The server is not involved after that.
-- **Approve / delete**: not applicable.
+- **Order (submit)**: same request with `&o=1` → `sigmaswap.py build` (mode `order`): builds
+  `[user boxes] → [order box, user change, miner fee]`. The order box is guarded by the ErgoDex
+  swap-order contract carrying the user's key, pool, minimum output and execution-fee rate. Before
+  release, the helper builds the transaction a bot would use to execute that exact box and checks
+  that both the pool and the order contract accept it. ErgoDex's bots then execute it on-chain;
+  this server takes no further part.
+- **Open orders**: `POST api.pl?action=orders` → `sigmaswap.py orders` asks the explorer for
+  unspent boxes of the two order contracts and keeps those carrying the address's key. Nothing is
+  stored; the list is read from the chain each time.
+- **Cancel order (delete)**: `GET api.pl?action=ergopay&r=<box id>&addr=…` → `sigmaswap.py refund`
+  verifies the box is unspent, is one of the two order contracts and carries that address's key,
+  then builds `[order box] → [everything back to the address, miner fee]`. Only the key holder can
+  sign it.
+- **Approve**: not applicable.
 - **Landing page**: browser `POST api.pl` (FormData `action=pools`) → pair list.
 
 ## 5. Authentication & authorization
@@ -66,6 +81,8 @@
 - **ErgoDex analytics API** (`POOLS_API_URL`, default `https://api.ergodex.io/v1/amm/pools/stats`):
   list of pools with liquidity. Read-only HTTPS GET.
 - **ergo-lib-python 0.28.0** (sigma-rust) in `venv/`: transaction building and script evaluation.
+- **ErgoDex off-chain bots** (third party, not operated by us): execute orders placed in order
+  mode and take the execution fee. We do not call them; they watch the chain.
 - No SMTP, no Oracle, no MariaDB. Outbound hosts are fixed in configuration, never taken from a
   request (no SSRF surface).
 
@@ -87,6 +104,11 @@
   file uploads disabled.
 - **Pool allowlist**: a pool box is used only if its script is byte-for-byte one of the two ErgoDex
   pool contracts and it carries the pool's NFT.
+- **Order safety**: only the two ErgoDex native-fee ERG↔token order contracts are used, with
+  constants filled in by position; trees built this way were compared byte-for-byte with orders
+  the bots executed on-chain. Every order carries the owner's key, so the owner can always take
+  the funds back. A box is treated as an order (listed, refundable) only if rebuilding the known
+  contract with the box's constants reproduces its script exactly.
 - **Transaction safety**: output amounts come from the pool formula; the builder refuses any
   unbalanced ERG/token total (no silent burn); the pool contract is evaluated against the exact
   transaction before it is released; a re-quote below the user's minimum aborts the swap.
@@ -121,12 +143,21 @@
   contract and the user's signature still apply) but could cause failed transactions.
 - **Token names can be spoofed.** Only pools above `MIN_TVL_USD` are listed and same-ticker tokens
   show their id, but users must check the token in their wallet.
-- **Race with other traders**: if the pool changes between signing and inclusion, the transaction
-  is rejected by the network (nothing is spent) and the user must preview again.
+- **Race with other traders (direct mode)**: if the pool changes between signing and inclusion,
+  the transaction is rejected by the network (nothing is spent) and the user must preview again.
+  Order mode exists for this case.
+- **Order mode depends on ErgoDex's bots.** They are a third party. Recent ERG↔token orders were
+  executed within 0–1 blocks (checked on-chain), but if the bots stop, or the price stays below an
+  order's minimum, the order simply waits; the funds stay in the order box until the user cancels
+  it. Cancelling costs one network fee. Execution costs about 0.006 ERG (max 0.0072).
+- **Order mode covers ERG pairs only.** Token↔token orders showed no recent bot executions, so
+  those pairs stay direct-only.
+- **Open orders are found by scanning** up to 400 unspent boxes per order contract; an address's
+  order beyond that window would not be listed (the user could still refund it on ergodex.io).
 - **Single address**: funds are taken from, and change returns to, the one address the user picks;
   boxes on the wallet's other addresses are not used. Confirmed boxes only, at most 60 inputs.
 - **Explorer lag**: a second swap right after the first may fail until the first one confirms.
-- **Not tested here on a physical wallet**: the Mosaik JSON was written against the Mosaik
-  reference serializer/runtime, and the ErgoPay payload was signed with a test wallet in
-  ergo-lib, but the first on-device run should use a small amount.
+- **Order mode has not been executed by a real bot from this app**: order creation, a simulated
+  bot execution against live pools, and refunds were all signed with a test wallet in ergo-lib,
+  but no order from this app was broadcast. Make the first real order a small one.
 - Data classification: low-risk public data only (Policy 5.10); no moderate/high-risk data.
