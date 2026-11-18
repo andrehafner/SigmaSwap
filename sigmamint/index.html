@@ -22,21 +22,19 @@
 
 <main>
     <section id="uploadCard" class="card" hidden>
-        <h2>Upload a file for your NFT</h2>
-        <p>Add your picture, sound or video here. You get a link to paste into SigmaMint in your Ergo wallet.</p>
+        <h2>Choose the file for your NFT</h2>
+        <p>Pick your picture, sound or video. It is attached to the NFT you are creating in your Ergo wallet.</p>
         <input id="file" type="file" aria-label="Picture, sound or video file"
                accept="image/png,image/jpeg,image/gif,image/webp,audio/mpeg,audio/wav,audio/ogg,video/mp4,video/webm">
         <p id="uploadMsg" class="hint" role="status"></p>
         <div id="preview" hidden></div>
-        <div id="result" hidden>
-            <p class="hint">Your link</p>
-            <div class="copy">
-                <input id="link" type="text" readonly aria-label="IPFS link">
-                <button id="copyLink" type="button">Copy</button>
-            </div>
-            <p id="copyMsg" class="hint" role="status">Copy it, go back to SigmaMint in your Ergo wallet, and paste it into the file field.</p>
-        </div>
-        <p class="hint">Uploaded files are stored on IPFS: anyone can see them and they cannot be removed. Only upload what you have the right to share.</p>
+        <p id="doneMsg" class="done" role="status" hidden>File added. Go back to your Ergo wallet and tap Preview.</p>
+        <p class="hint">The file is stored on IPFS: anyone can see it and it cannot be removed. Only add what you have the right to share.</p>
+    </section>
+
+    <section id="expiredCard" class="card" hidden>
+        <h2>This page has expired</h2>
+        <p>Go back to SigmaMint in your Ergo wallet and tap "Choose file" again.</p>
     </section>
 
     <section class="card">

@@ -89,15 +89,19 @@
 - **Approve**: not applicable.
 - **Landing page**: browser `POST api.pl` (FormData `action=pools`) → pair list.
 
-- **SigmaMint mint**: wallet `POST sigmamint/api.pl?action=preview` (name, description, amount and
-  decimals, or an IPFS link) → input checked, link fingerprinted through the configured gateway →
+- **SigmaMint mint**: wallet `POST sigmamint/api.pl?action=preview` (name, description, and
+  amount + decimals, or for an NFT the file attached to the wallet session) → input checked →
   a mint note is stored under a random id → wallet `GET ...?action=ergopay&n=<id>&addr=` →
   `sigmaswap.py mint` builds `[user boxes] → [box with the new token + EIP-4 registers, change,
   miner fee]` → signed in the wallet → `action=status` reports it and shows the token id.
-- **SigmaMint upload**: browser `POST sigmamint/api.pl` (FormData `action=upload`, one file) →
-  size, rate limits → `sigmaswap.py upload` checks the file's signature bytes against an allowlist,
-  hashes it, sends it to Lighthouse with the API key → `{cid, sha256, media}` → the page shows the
-  `ipfs://` link for the user to paste into the wallet.
+- **SigmaMint NFT file**: Mosaik has no file picker, so the NFT form's "Choose file" button opens
+  the browser page with the wallet session's id (`?s=`). The id is issued only by the wallet
+  screens and signed (HMAC) with a secret kept in `CACHE_DIR/mint-secret`; it is valid for two
+  hours. Browser `POST sigmamint/api.pl` (FormData `action=upload`, `s`, one file) → session id
+  verified → size and rate limits → `sigmaswap.py upload` checks the file's signature bytes against
+  an allowlist, hashes it, sends it to Lighthouse with the API key → the content id and hash are
+  stored against the session. Back in the wallet, Preview picks them up. Without a valid session
+  id the page offers no upload and the endpoint refuses.
 
 ## 5. Authentication & authorization
 
@@ -120,8 +124,8 @@
 - **ErgoDex off-chain bots** (third party, not operated by us): execute orders placed in order
   mode and take the execution fee. We do not call them; they watch the chain.
 - **Lighthouse** (`upload.lighthouse.storage`, `gateway.lighthouse.storage`): SigmaMint stores
-  uploaded NFT media there with the operator's API key, and reads a file back by content id to
-  fingerprint it. Files on IPFS are public and effectively permanent.
+  uploaded NFT media there with the operator's API key. The wallet loads the preview picture
+  from the gateway directly. Files on IPFS are public and effectively permanent.
 - No SMTP, no Oracle, no MariaDB. Outbound hosts are fixed in configuration, never taken from a
   request (no SSRF surface).
 
@@ -171,8 +175,10 @@
   type allowlist by signature bytes, not by name or declared type (PNG, JPG, GIF, WEBP, MP3, WAV,
   OGG, MP4, WEBM — no SVG or HTML); the client's file name is discarded; per-visitor hourly and
   global daily limits; kill switch `MINT_UPLOADS=0`; nothing is kept on this server.
-- **No arbitrary fetches**: SigmaMint only ever fetches `<gateway>/<content id>` with a strictly
-  validated id, so it cannot be pointed at internal addresses.
+- **Uploads only from a wallet session**: the upload endpoint requires a signed, unexpired session
+  id that only the wallet screens hand out; forged or stale ids are refused.
+- **No server-side fetching of user-supplied locations**: SigmaMint never downloads anything a
+  user points it at.
 - **Token names**: names equal to a token in the swap list are refused, and the app states that a
   name does not make a token official.
 - **Web exposure**: Apache serves only the web files; `.py`, `.pm`, `.sh`, `.md`, `venv/`,
@@ -191,9 +197,10 @@
 - **Public and unauthenticated on a Cornell host** — a deliberate exception to the Shibboleth
   baseline. There is no rate limiting in the app; each quote/swap request makes 1–4 outbound API
   calls and starts a Python process. Add Apache-level rate limiting if it is abused.
-- **SigmaMint: anonymous uploads go to the operator's Lighthouse account.** Anyone on the internet
-  can store a picture, sound or video (up to the limits) under that account, and it cannot be
-  removed from IPFS afterwards. Content is not reviewed or scanned. The limits and the kill switch
+- **SigmaMint: anonymous uploads go to the operator's Lighthouse account.** Uploading needs
+  a session started in the wallet app, which stops drive-by use of the page, but the app has no
+  login, so anyone who opens it can still store a picture, sound or video (up to the limits) under
+  that account, and it cannot be removed from IPFS afterwards. Content is not reviewed or scanned. The limits and the kill switch
   bound the volume, not the content. This is the main policy risk of the deployment.
 - **SigmaMint: anonymous token minting on a cornell.edu host.** Minting is permissionless on Ergo,
   but tokens and NFTs minted here could be presented as associated with the host.

@@ -1,8 +1,10 @@
 // SigmaMint browser page. Minting happens inside the Ergo wallet (Mosaik). This
-// page exists for the one thing Mosaik cannot do: pick a file. It uploads the NFT
-// media and hands back the IPFS link to paste into the wallet.
+// page exists for the one thing Mosaik cannot do: pick a file. The wallet's
+// "Choose file" button opens it with a session id (?s=...); the file picked here
+// is attached to that session, and the wallet carries on from there.
 
 let config = { uploads: 0, max_mb: 10 };
+const session = new URLSearchParams(window.location.search).get('s') || '';
 
 async function apiCall(action, params = {}) {
     const formData = new FormData();
@@ -28,7 +30,7 @@ function escapeHtml(text) {
 const el = id => document.getElementById(id);
 
 async function uploadFile(file) {
-    el('result').hidden = true;
+    el('doneMsg').hidden = true;
     el('preview').hidden = true;
     el('preview').innerHTML = '';
     if (!file) return;
@@ -38,11 +40,11 @@ async function uploadFile(file) {
         el('file').value = '';
         return;
     }
-    msg.textContent = 'Uploading…';
+    msg.textContent = 'Adding your file…';
     el('file').disabled = true;
     try {
-        const res = await apiCall('upload', { file });
-        msg.textContent = 'Uploaded.';
+        const res = await apiCall('upload', { s: session, file });
+        msg.textContent = '';
         // preview from the user's own file: nothing is fetched
         const url = URL.createObjectURL(file);
         el('preview').innerHTML =
@@ -50,8 +52,7 @@ async function uploadFile(file) {
             : res.media === 'audio'   ? `<audio controls src="${escapeHtml(url)}"></audio>`
             :                           `<video controls src="${escapeHtml(url)}"></video>`;
         el('preview').hidden = false;
-        el('link').value = 'ipfs://' + res.cid;
-        el('result').hidden = false;
+        el('doneMsg').hidden = false;
     } catch (e) {
         msg.textContent = e.message;
         el('file').value = '';
@@ -74,18 +75,19 @@ async function copyFrom(inputId, button) {
 
 function setupListeners() {
     el('file').addEventListener('change', ev => uploadFile(ev.target.files[0]));
-    el('copyLink').addEventListener('click', ev => copyFrom('link', ev.target));
     el('copyApp').addEventListener('click', ev => copyFrom('appUrl', ev.target));
 }
 
 async function init() {
     // host-agnostic: the dApp address is wherever this page is served from
-    el('appUrl').value = new URL('api.pl', window.location.href).href;
+    el('appUrl').value = new URL('api.pl', window.location.href.split('?')[0]).href;
     setupListeners();
+    if (!session) return;                 // plain visit: just the "open it in your wallet" info
     try {
-        config = await apiCall('config');
-    } catch (e) { /* uploads stay hidden */ }
+        config = await apiCall('config', { s: session });
+    } catch (e) { /* treated as expired */ }
     el('uploadCard').hidden = !config.uploads;
+    el('expiredCard').hidden = !!config.uploads;
 }
 
 document.addEventListener('DOMContentLoaded', init);

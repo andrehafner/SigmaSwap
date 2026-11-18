@@ -10,8 +10,10 @@
 #     POST api.pl?action=status&n=<id>     -> what happened to the mint
 #   ErgoPay (EIP-20), fetched by the wallet at signing time
 #     GET  api.pl?action=ergopay&n=<id>&addr=<address>
-#   Browser page (index.html / app.js), POST FormData. It only uploads NFT media,
-#   because Mosaik has no file picker; the minting itself happens in the wallet.
+#   Browser page (index.html / app.js), POST FormData. Mosaik has no file picker,
+#   so the NFT form's "Choose file" button opens this page with the wallet session's
+#   id (?s=...). The file picked there is attached to that session; the user goes
+#   back to the wallet and continues. Without a valid session id there is no upload.
 #     action=config | upload
 #
 # Public, no login, no database. The server never signs anything. What it keeps:
@@ -28,11 +30,11 @@ use JSON::PP ();
 use Math::BigInt;
 use File::Spec;
 use Fcntl qw(:flock);
-use Digest::SHA qw(sha256_hex);
+use Digest::SHA qw(sha256_hex hmac_sha256_hex);
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 1;
+use constant APP_VERSION => 2;
 use constant ERG         => '0' x 64;
 
 my $MAX_MB = cfg('MINT_MAX_UPLOAD_MB', 10) + 0;
@@ -58,6 +60,11 @@ $action = '' unless defined $action;
 my $KIND = $cgi->url_param('k');
 $KIND = 'token' unless defined $KIND && $KIND eq 'nft';
 
+# The wallet session's id for attaching an NFT file. It is carried in the action
+# URLs; a fresh one is issued whenever the wallet arrives without a valid one.
+my $SESSION = $cgi->url_param('s');
+$SESSION = new_session() unless session_ok($SESSION);
+
 my %mosaik  = ('' => \&act_app, home => \&act_home, form => \&act_form, preview => \&act_preview, status => \&act_status);
 my %browser = (config => \&web_config, upload => \&web_upload);
 
@@ -78,6 +85,46 @@ else {
     die_json('Unknown action');
 }
 exit;
+
+# ================================================================ sessions ==
+# A session id is issued only by the wallet screens and is signed with a secret
+# that never leaves this server, so an upload cannot be started from anywhere
+# else. Format: 16 hex time + 16 hex random + 32 hex signature. Valid for 2 hours.
+
+sub server_secret {
+    my $cd = cache_dir() or return undef;
+    my $file = File::Spec->catfile($cd, 'mint-secret');
+    if (!-s $file) {
+        my $new = (new_nonce() // '') . (new_nonce() // '');
+        return undef unless length($new) == 64;
+        my $old = umask 0077;
+        if (sysopen(my $fh, $file, Fcntl::O_WRONLY | Fcntl::O_CREAT | Fcntl::O_EXCL)) { print {$fh} $new; close $fh }
+        umask $old;
+    }
+    open(my $fh, '<', $file) or return undef;
+    my $secret = <$fh>;
+    close $fh;
+    return (defined $secret && $secret =~ /^([0-9a-f]{64})/) ? $1 : undef;
+}
+
+sub new_session {
+    my $secret = server_secret() or return '';
+    my $rand = new_nonce() or return '';
+    my $body = sprintf('%016x', time) . substr($rand, 0, 16);
+    return $body . substr(hmac_sha256_hex($body, $secret), 0, 32);
+}
+
+sub session_ok {
+    my ($s) = @_;
+    return 0 unless defined $s && $s =~ /^([0-9a-f]{32})([0-9a-f]{32})\z/;
+    my ($body, $sig) = ($1, $2);
+    my $secret = server_secret() or return 0;
+    return 0 unless substr(hmac_sha256_hex($body, $secret), 0, 32) eq $sig;
+    my $age = time - hex(substr($body, 0, 16));
+    return ($age >= 0 && $age < 2 * 3600) ? 1 : 0;
+}
+
+sub session_key { return substr(sha256_hex("file|$_[0]"), 0, 32) }    # where a session's file note is stored
 
 # =============================================================== validation ==
 
@@ -223,13 +270,18 @@ sub form_view {
                         'BODY2', color => 'SECONDARY'), align => 'START');
     }
     else {
-        push @form,
-            child(label('The file', 'BODY1BOLD'), align => 'START'),
-            text_field('link', 'IPFS link (ipfs://...)', trim($v->{link}), 120),
-            child(label('Paste the IPFS link of your picture, sound or video. No link yet? Open the upload page, '
-                        . 'add your file there, copy the link it gives you, then come back and paste it here.',
-                        'BODY2', color => 'SECONDARY'), align => 'START'),
-            button('Open the upload page', 'openWeb', style => 'TEXT');
+        my $file = load_record(session_key($SESSION));
+        push @form, child(label('Picture, sound or video', 'BODY1BOLD'), align => 'START');
+        if ($file && $file->{cid}) {
+            push @form, child(label("\x{2713} " . ucfirst($file->{media}) . ' added', 'BODY1', color => 'PRIMARY'), align => 'START'),
+                        button('Choose a different file', 'openWeb', style => 'TEXT');
+        }
+        else {
+            push @form,
+                button('Choose file', 'openWeb', style => 'SECONDARY'),
+                child(label('This opens a page where you pick the file from your phone. When it says the file is '
+                            . 'added, come back here and tap Preview.', 'BODY2', color => 'SECONDARY'), align => 'START');
+        }
     }
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
     push @kids, child($result || result_placeholder(), align => 'JUSTIFY');
@@ -241,8 +293,8 @@ sub base_actions {
         O(type => 'BackendRequestAction', url => "$API?action=form&k=token", id => 'goToken', postValues => 'NONE'),
         O(type => 'BackendRequestAction', url => "$API?action=form&k=nft",   id => 'goNft',   postValues => 'NONE'),
         O(type => 'BackendRequestAction', url => "$API?action=home",         id => 'home',    postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=preview&k=$KIND", id => 'preview', postValues => 'VALID'),
-        O(type => 'BrowserAction', url => "$BASE/", id => 'openWeb'),
+        O(type => 'BackendRequestAction', url => "$API?action=preview&k=$KIND&s=$SESSION", id => 'preview', postValues => 'VALID'),
+        O(type => 'BrowserAction', url => "$BASE/?s=$SESSION", id => 'openWeb'),
         O(type => 'ChangeSiteAction', id => 'clearResult', newContent => O(view => result_placeholder())),
     );
 }
@@ -283,11 +335,10 @@ sub act_preview {
         unless defined $v->{address} && !ref $v->{address} && $v->{address} =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/;
     my %in = %$v;
     if ($KIND eq 'nft') {
-        my $link = trim($v->{link});
-        return mosaik_dialog('Paste the IPFS link of your file.') unless length $link;
-        my $h = chain('cidhash', { cid => $link, max_bytes => 50 * 1024 * 1024 }, 60);
-        return mosaik_dialog($h->{error} || 'That link could not be checked.') unless $h->{ok};
-        @in{qw(cid sha256 media)} = @$h{qw(cid sha256 media)};
+        my $file = load_record(session_key($SESSION));
+        return mosaik_dialog('Add your file first: tap "Choose file", pick it, then come back and tap Preview.')
+            unless $file && $file->{cid};
+        @in{qw(cid sha256 media)} = @$file{qw(cid sha256 media)};
     }
     my ($d, $err) = check_draft($KIND, \%in);
     return mosaik_dialog($err) unless $d;
@@ -313,7 +364,7 @@ sub act_preview {
         child(label('A mint cannot be undone or edited afterwards. Check the name and the numbers.', 'BODY2BOLD'), align => 'START'),
         button($KIND eq 'nft' ? 'Mint NFT' : 'Mint token', 'pay');
     mosaik_replace(result_box(\@rows),
-        O(type => 'BackendRequestAction', url => "$API?action=status&k=$KIND&n=$nonce", id => 'status', postValues => 'NONE'),
+        O(type => 'BackendRequestAction', url => "$API?action=status&k=$KIND&s=$SESSION&n=$nonce", id => 'status', postValues => 'NONE'),
         O(type => 'ErgoPayAction', id => 'pay', onFinished => 'status',
           url => 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&n=$nonce&addr=$v->{address}"));
 }
@@ -333,7 +384,7 @@ sub act_status {
     my $nonce = $cgi->url_param('n');
     return mosaik_dialog('Unknown mint.') unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/;
     my ($state, $rec) = mint_status($nonce);
-    my $self  = O(type => 'BackendRequestAction', url => "$API?action=status&k=$KIND&n=$nonce", id => 'status', postValues => 'NONE');
+    my $self  = O(type => 'BackendRequestAction', url => "$API?action=status&k=$KIND&s=$SESSION&n=$nonce", id => 'status', postValues => 'NONE');
     my $again = button('Refresh status', 'status', style => 'SECONDARY');
     my $back  = button('Back to the form', 'clearResult', style => 'TEXT');
     my $row   = sub { child(label($_[0], $_[1] || 'BODY1'), align => 'START') };
@@ -405,8 +456,13 @@ sub act_ergopay {
 
 sub uploads_enabled { return (cfg('LIGHTHOUSE_API_KEY') && cfg('MINT_UPLOADS', 1) && cache_dir()) ? 1 : 0 }
 
+sub web_session {    # the session id the page was opened with (FormData field s), if it is a valid one
+    my $s = $cgi->param('s');
+    return session_ok($s) ? $s : undef;
+}
+
 sub web_config {
-    success_json(uploads => N(uploads_enabled()), max_mb => N($MAX_MB));
+    success_json(uploads => N(uploads_enabled() && web_session() ? 1 : 0), max_mb => N($MAX_MB));
 }
 
 # Upload limits: uploads cost the operator's storage quota, so cap them per visitor
@@ -446,7 +502,9 @@ sub upload_allowed {
 }
 
 sub web_upload {
-    return die_json('Uploads are not available. Paste an IPFS link instead.') unless uploads_enabled();
+    return die_json('Uploads are not available.') unless uploads_enabled();
+    my $session = web_session()
+        or return die_json('This page has expired. Go back to SigmaMint in your Ergo wallet and tap "Choose file" again.');
     my $fh = $cgi->upload('file') or return die_json('No file received.');
     my $tmp = $cgi->tmpFileName($fh);
     return die_json('No file received.') unless defined $tmp && -f $tmp;
@@ -458,5 +516,8 @@ sub web_upload {
     my $r = chain('upload', { path => $tmp, key => cfg('LIGHTHOUSE_API_KEY'), max_bytes => $MAX_MB * 1024 * 1024 }, 150);
     return die_json($r->{error} || 'The upload failed. Please try again.') unless $r->{ok};
     warn "sigmamint: uploaded $r->{media} $r->{cid} ($r->{size} bytes)\n";    # security log: no file names, no key
-    success_json(cid => $r->{cid}, sha256 => $r->{sha256}, media => $r->{media}, size => N($r->{size}));
+    # attach the file to the wallet session: the wallet picks it up from here, nothing to copy
+    save_record(session_key($session), { cid => $r->{cid}, sha256 => $r->{sha256}, media => $r->{media}, t => time });
+    return die_json('The file could not be attached. Please try again.') unless load_record(session_key($session));
+    success_json(media => $r->{media});
 }

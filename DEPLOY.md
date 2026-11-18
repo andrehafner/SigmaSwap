@@ -156,26 +156,31 @@ SELinux step**. `redeploy.sh` covers it.
    sudo restorecon -F /data/AAP_Storage/secrets/sigmaswap.env
    ```
 
-   Without a key SigmaMint still works, but the upload page hides the upload and NFTs can only be
-   minted from an existing `ipfs://` link.
+   Without a key, tokens can still be minted but NFTs cannot (there is nowhere to put the file).
 
-2. **Outbound network** (the server relays uploads and reads files back to fingerprint them):
+2. **Outbound network** (the server relays uploaded files to Lighthouse):
 
    ```bash
-   curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://gateway.lighthouse.storage/ipfs/QmexivW9Nc3CgiTsRQkwDffUZiBRWdbaGqTSTw6ch6wfDF   # 200
-   curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://upload.lighthouse.storage/                                                     # any HTTP answer, not a timeout
+   curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://upload.lighthouse.storage/      # any HTTP answer, not a timeout
    ```
+
+   The wallet itself (not the server) loads the NFT preview picture from
+   `gateway.lighthouse.storage`.
 
 3. **GATES**
 
    ```bash
    ls -Z sigmamint/api.pl                                    # httpd_sys_script_exec_t
    curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl | head -c 80; echo      # {"manifest":{"appName":"SigmaMint",...
-   curl -sS -F action=config https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl; echo  # {"success":1,"uploads":1,"max_mb":10}
+   curl -sS -F action=config https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl; echo  # {"success":1,"uploads":0,"max_mb":10}
    ```
 
-   `"uploads":0` means the key is missing/empty, `MINT_UPLOADS=0`, or the cache directory is not
-   writable. Then open the page in a browser, upload a small picture, and check that a link appears.
+   `"uploads":0` is CORRECT here: uploading only works from a session started in the wallet, so a
+   plain request is refused. The real test is in the wallet: Mint an NFT -> Choose file -> pick a
+   small picture -> "File added" -> back to the wallet -> Preview shows the picture.
+   If the picker page says "This page has expired" straight away, the key is missing/empty,
+   `MINT_UPLOADS=0`, or the cache directory is not writable (the session secret lives there as
+   `mint-secret`).
 
 Uploads are spooled to `tmp/` inside the cache directory while they are checked and relayed, then
 deleted; counters for the upload limits are in `mint-limits.json` there. Limits and the kill switch

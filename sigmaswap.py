@@ -988,28 +988,6 @@ def cmd_upload(req):
     return {"cid": cid, "sha256": digest, "size": size, "media": media, "ext": ext}
 
 
-def cmd_cidhash(req):
-    """Fingerprint a file that is already on IPFS (fetched only from the configured gateway)."""
-    import hashlib
-    cfg = req["cfg"]
-    cid = req_cid(req.get("cid"))
-    max_bytes = int(req.get("max_bytes") or 0) or 50 * 1024 * 1024
-    url = cfg["ipfs_gateway_url"].rstrip("/") + "/" + cid
-    request = urllib.request.Request(url, headers={"User-Agent": "sigmamint/1"})
-    try:
-        with urllib.request.urlopen(request, timeout=40) as r:
-            data = r.read(max_bytes + 1)
-    except Exception as e:
-        sys.stderr.write("sigmaswap.py: could not fetch %s: %s\n" % (cid, str(e)[:120]))
-        raise SwapError("That IPFS link could not be loaded. Check it, or upload the file instead.")
-    if len(data) > max_bytes:
-        raise SwapError("The linked file is too large (limit %d MB)." % (max_bytes // (1024 * 1024)))
-    kind = sniff_media(data[:16])
-    if not kind:
-        raise SwapError("The linked file is not a supported picture, audio or video file.")
-    return {"cid": cid, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "media": kind[0], "ext": kind[1]}
-
-
 def cmd_mint(req):
     from ergo_lib_python.chain import (Constant, ErgoBoxCandidate, NetworkPrefix, NonMandatoryRegisterId,
                                        Token, TokenId)
@@ -1157,7 +1135,7 @@ def cmd_health(req):
 
 COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balance": cmd_balance,
             "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status,
-            "mint": cmd_mint, "upload": cmd_upload, "cidhash": cmd_cidhash}
+            "mint": cmd_mint, "upload": cmd_upload}
 
 
 def main():

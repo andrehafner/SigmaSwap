@@ -84,7 +84,6 @@ sub chain {
         order_miner_fee  => cfg('ORDER_MINER_FEE',  2000000) + 0,
         use_mempool      => (cfg('USE_MEMPOOL', 1) ? JSON::PP::true : JSON::PP::false),
         lighthouse_upload_url => cfg('LIGHTHOUSE_UPLOAD_URL', 'https://upload.lighthouse.storage/api/v0/add'),
-        ipfs_gateway_url      => cfg('IPFS_GATEWAY_URL',      'https://gateway.lighthouse.storage/ipfs'),
     };
     my $python = cfg('PYTHON', "$ROOT/venv/bin/python");
     my $script = "$ROOT/sigmaswap.py";
