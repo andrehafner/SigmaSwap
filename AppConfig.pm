@@ -77,6 +77,7 @@ sub chain {
         miner_fee     => cfg('MINER_FEE',     1100000) + 0,
         order_min_ex_fee => cfg('ORDER_MIN_EX_FEE', 6000000) + 0,
         order_miner_fee  => cfg('ORDER_MINER_FEE',  2000000) + 0,
+        use_mempool      => (cfg('USE_MEMPOOL', 1) ? JSON::PP::true : JSON::PP::false),
     };
     my $python = cfg('PYTHON', "$FindBin::Bin/venv/bin/python");
     my $script = "$FindBin::Bin/sigmaswap.py";

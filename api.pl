@@ -9,6 +9,9 @@
 #     POST api.pl?action=flip        -> same, with pay/receive tokens exchanged
 #     POST api.pl?action=quote       -> price the swap, show details + Swap button
 #     POST api.pl?action=orders      -> list the address's open swap orders (cancel buttons)
+#     POST api.pl?action=home        -> the start screen (choose direct swap or order)
+#     POST api.pl?action=status&n=   -> what happened to the swap/order just signed
+#   (&mode=direct|order on every Mosaik action says which of the two screens is open)
 #   ErgoPay (EIP-20), fetched by the wallet when the user taps Swap
 #     GET  api.pl?action=ergopay&... -> { reducedTx, address, message, messageSeverity }
 #          (a direct swap; with &o=1 an order; with &r=<box id> the refund of an order)
@@ -16,7 +19,9 @@
 #     POST api.pl  action=pools      -> { success: 1, pools: [...] }
 #     POST api.pl  action=health     -> { success: 1, ... }   (deploy gate)
 #
-# The app is public and stateless: no login, no database, no cookies, no keys.
+# The app is public: no login, no database, no cookies, no keys. The only thing it
+# stores is a short-lived note of each transaction it built (public data), so it
+# can tell the user afterwards whether the swap went through.
 # The server only ever builds an UNSIGNED transaction; the user's wallet shows
 # it, and signs it or not. All chain work happens in sigmaswap.py.
 
@@ -31,10 +36,9 @@ use Math::BigFloat;
 use File::Spec;
 use AppConfig qw(cfg base_url chain);
 
-use constant APP_VERSION => 2;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 3;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
-use constant MODES       => (direct => 'Direct swap (instant)', order => 'Order (for busy pools)');
 
 $CGI::POST_MAX        = 64 * 1024;
 $CGI::DISABLE_UPLOADS = 1;
@@ -50,12 +54,18 @@ my $action = $cgi->url_param('action');
 $action = $cgi->param('action') unless defined $action && $action ne '';
 $action = '' unless defined $action;
 
+# 'direct' or 'order': which of the two swap screens the user is on (carried in the action URLs)
+my $MODE = $cgi->url_param('mode');
+$MODE = 'direct' unless defined $MODE && $MODE eq 'order';
+
 my %actions = (
     ''        => \&act_app,
     'refresh' => \&act_refresh,
     'flip'    => \&act_flip,
     'quote'   => \&act_quote,
     'orders'  => \&act_orders,
+    'home'    => \&act_home,
+    'status'  => \&act_status,
     'ergopay' => \&act_ergopay,
     'pools'   => \&act_pools,
     'health'  => \&act_health,
@@ -71,7 +81,7 @@ elsif (exists $actions{$action}) {
         $err =~ s/\s+\z//;
         warn "sigmaswap: action '$action' failed: $err\n";     # detail to the log only
         if    ($action eq 'ergopay')                  { ergopay_error('Something went wrong. Please try again.') }
-        elsif ($action =~ /^(refresh|flip|quote|orders)\z/) { mosaik_dialog('Something went wrong. Please try again.') }
+        elsif ($action =~ /^(refresh|flip|quote|orders|home|status)\z/) { mosaik_dialog('Something went wrong. Please try again.') }
         else                                          { die_json('Something went wrong') }
     }
 }
@@ -164,10 +174,15 @@ sub fmt_pct {    # basis points -> "0.32 %"
 # The liquid-pool list is cached in a small JSON file (outside the app tree in
 # production) so that opening the app does not hit the ErgoDex API every time.
 
-sub cache_file {
+sub cache_dir {
     my $dir = cfg('CACHE_DIR', File::Spec->catdir(File::Spec->tmpdir, "sigmaswap-cache-$>"));
     mkdir $dir, 0770 unless -d $dir;
-    return (-d $dir && -w $dir) ? File::Spec->catfile($dir, 'pools.json') : undef;
+    return (-d $dir && -w $dir) ? $dir : undef;
+}
+
+sub cache_file {
+    my $dir = cache_dir();
+    return defined $dir ? File::Spec->catfile($dir, 'pools.json') : undef;
 }
 
 sub read_pool_cache {
@@ -258,9 +273,13 @@ sub clean_state {
     my %slip = SLIPPAGE;
     my $sl   = $v->{slippage};
     $s{slippage} = (defined $sl && !ref $sl && exists $slip{$sl}) ? $sl : 100;
-    my %modes = MODES;
-    my $mode  = $v->{mode};
-    $s{mode} = (defined $mode && !ref $mode && exists $modes{$mode}) ? $mode : 'direct';
+    if ($MODE eq 'order') {    # orders exist for ERG pairs only
+        my $erg = ERG;
+        $s{from} = $erg unless defined $s{from} && ($s{from} eq $erg || $reg->{pair}{ $s{from} }{$erg});
+        if    ($s{from} ne $erg)                                       { $s{to} = $erg }
+        elsif (defined $s{to} && !$reg->{pair}{$erg}{ $s{to} })        { delete $s{to} }
+        delete $s{amount} unless defined $v->{ 'amount_' . $reg->{tokens}{ $s{from} }{decimals} };
+    }
     return \%s;
 }
 
@@ -298,7 +317,7 @@ sub token_dropdown {
 
 sub quote_placeholder {    # what the quote area shows before / after a preview
     my ($text) = @_;
-    return O(type => 'Box', id => 'quote', children => [ button($text || 'Preview swap', 'preview') ]);
+    return O(type => 'Box', id => 'quote', children => [ button($text || ($MODE eq 'order' ? 'Preview order' : 'Preview swap'), 'preview') ]);
 }
 
 sub orders_placeholder {    # collapsed "open orders" area (needs an address)
@@ -307,21 +326,76 @@ sub orders_placeholder {    # collapsed "open orders" area (needs an address)
              children => [ $address ? button('My open orders', 'orders', style => 'TEXT') : () ]);
 }
 
-sub main_view {
-    my ($reg, $s, $balance, $quote_box) = @_;
-    my $tok  = $reg->{tokens};
-    my $from = defined $s->{from} ? $tok->{ $s->{from} } : undef;
-
-    my @kids = (
+sub title_block {
+    return (
         label('SigmaSwap', 'HEADLINE1', color => 'PRIMARY'),
-        label('Swap tokens directly against the ErgoDex liquidity pools', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
+        label('Swap ERG and tokens on the ErgoDex liquidity pools', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
     );
+}
 
+# ---- home: the two ways to swap, each explained
+
+sub home_view {
+    my ($reg) = @_;
+    my @kids = title_block();
     if (!@{ $reg->{order} }) {
         push @kids, label('The pool list is unavailable right now. Please try again in a moment.', 'BODY1', talign => 'CENTER'),
                     button('Retry', 'reload');
         return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
     }
+    my $order_fee = fmt_amount(cfg('ORDER_MIN_EX_FEE', 6000000), 9);
+
+    push @kids, child(card(column([
+        child(label('Direct swap', 'HEADLINE2'), align => 'START'),
+        child(label('One transaction between your wallet and the pool. You receive exactly the amount you are shown, '
+                    . 'with no extra fee, and nobody can trade ahead of you.', 'BODY1'), align => 'START'),
+        child(label('If someone else trades in the same pool at the same moment, your swap does not happen. '
+                    . 'Nothing is spent, and you simply try again.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+        button('Direct swap', 'goDirect'),
+    ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+
+    push @kids, child(card(column([
+        child(label('Order', 'HEADLINE2'), align => 'START'),
+        child(label('Your funds go into an ErgoDex order and a bot completes the swap for you, even when the pool '
+                    . "is busy. Costs about $order_fee ERG extra. Pairs with ERG only. "
+                    . 'You can cancel while it is waiting.', 'BODY1'), align => 'START'),
+        child(row([
+            O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
+            child(label('Warning: you can be front-run. A waiting order is public, so other traders can trade '
+                        . 'ahead of it and you may receive only your minimum amount instead of the quoted one.',
+                        'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY'),
+        button('Place an order', 'goOrder', style => 'SECONDARY'),
+    ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+
+    push @kids, label('Your wallet signs every transaction; SigmaSwap never holds your funds.',
+                      'BODY2', color => 'SECONDARY', talign => 'CENTER');
+    return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
+}
+
+# ---- the swap form of one mode
+
+sub main_view {
+    my ($reg, $s, $balance, $quote_box) = @_;
+    my $tok   = $reg->{tokens};
+    my $from  = defined $s->{from} ? $tok->{ $s->{from} } : undef;
+    my $order = $MODE eq 'order';
+
+    my @kids = title_block();
+    if (!@{ $reg->{order} }) {
+        push @kids, label('The pool list is unavailable right now. Please try again in a moment.', 'BODY1', talign => 'CENTER'),
+                    button('Retry', 'reload');
+        return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
+    }
+    push @kids, child(row([
+        child(label($order ? 'Order' : 'Direct swap', 'HEADLINE2'), weight => N(1)),
+        button('Change', 'home', style => 'TEXT'),
+    ]), align => 'JUSTIFY');
+    push @kids, child(row([
+        O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
+        child(label('A waiting order can be front-run: you may receive only your minimum amount.',
+                    'BODY2', color => 'PRIMARY'), weight => N(1)),
+    ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY') if $order;
 
     # ---- wallet
     push @kids, child(card(column([
@@ -331,13 +405,17 @@ sub main_view {
         child(label('Funds are taken from, and returned to, this address.', 'BODY2', color => 'SECONDARY'), align => 'START'),
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
-    # ---- pay / receive
-    my @to_ids = $from ? (sort { $reg->{pair}{ $from->{id} }{$b}{tvl} <=> $reg->{pair}{ $from->{id} }{$a}{tvl} || $a cmp $b }
-                               keys %{ $reg->{pair}{ $from->{id} } }) : ();
+    # ---- pay / receive (orders exist for ERG pairs only)
+    my $erg      = ERG;
+    my @from_ids = $order ? (grep { $_ eq $erg || $reg->{pair}{$_}{$erg} } @{ $reg->{order} }) : @{ $reg->{order} };
+    my @to_ids   = !$from ? ()
+                 : ($order && $from->{id} ne $erg) ? ($erg)
+                 : (sort { $reg->{pair}{ $from->{id} }{$b}{tvl} <=> $reg->{pair}{ $from->{id} }{$a}{tvl} || $a cmp $b }
+                         keys %{ $reg->{pair}{ $from->{id} } });
     my %slip = SLIPPAGE;
     my @form = (
         child(label('You pay', 'BODY1BOLD'), align => 'START'),
-        child(token_dropdown('from', $reg, $reg->{order}, $s->{from}, 'Select token'), align => 'JUSTIFY'),
+        child(token_dropdown('from', $reg, \@from_ids, $s->{from}, 'Select token'), align => 'JUSTIFY'),
     );
     if ($from) {
         push @form, child(O(
@@ -354,35 +432,33 @@ sub main_view {
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
         child(label('You receive', 'BODY1BOLD'), align => 'START'),
         child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token'), align => 'JUSTIFY'),
-        child(label('Slippage tolerance', 'BODY1BOLD'), align => 'START'),
+        child(label($order ? 'Slippage tolerance (sets your minimum)' : 'Slippage tolerance', 'BODY1BOLD'), align => 'START'),
         child(O(type => 'DropDownList', id => 'slippage', value => "$s->{slippage}", onValueChanged => 'clearQuote',
                 entries => O(map { $_ => $slip{$_} } sort { $a <=> $b } keys %slip)), align => 'JUSTIFY');
-    my %modes = MODES;
-    push @form,
-        child(label('Execution', 'BODY1BOLD'), align => 'START'),
-        child(O(type => 'DropDownList', id => 'mode', value => $s->{mode}, onValueChanged => 'clearQuote',
-                entries => O(map { $_ => $modes{$_} } qw(direct order))), align => 'JUSTIFY'),
-        child(label('Direct: one transaction, cheapest, but it fails if someone else trades in the same pool first. '
-                    . 'Order: an ErgoDex bot executes it for a small fee, even when the pool is busy (ERG pairs only).',
-                    'BODY2', color => 'SECONDARY'), align => 'START');
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
-    # ---- quote area, open orders, footer
+    # ---- quote / status area, open orders, footer
     push @kids, child($quote_box || quote_placeholder(), align => 'JUSTIFY');
-    push @kids, child(orders_placeholder($s->{address}), align => 'JUSTIFY');
+    push @kids, child(orders_placeholder($s->{address}), align => 'JUSTIFY') if $order;
     push @kids, label('Network fee ' . fmt_amount(cfg('MINER_FEE', 1100000), 9) . ' ERG. No service fee. '
-                      . 'Your wallet signs every swap; SigmaSwap never holds your funds.',
+                      . 'Your wallet signs every transaction; SigmaSwap never holds your funds.',
                       'BODY2', color => 'SECONDARY', talign => 'CENTER');
 
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
+# Every response re-declares the actions with the current mode in their URLs: the
+# mode is not an input field, it travels with the buttons.
 sub base_actions {
+    my $m = "&mode=$MODE";
     return (
-        O(type => 'BackendRequestAction', url => "$API?action=refresh", id => 'refresh', postValues => 'VALID'),
-        O(type => 'BackendRequestAction', url => "$API?action=flip",    id => 'flip',    postValues => 'VALID'),
-        O(type => 'BackendRequestAction', url => "$API?action=quote",   id => 'preview', postValues => 'VALID'),
-        O(type => 'BackendRequestAction', url => "$API?action=orders",  id => 'orders',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=direct", id => 'goDirect', postValues => 'NONE'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=order",  id => 'goOrder',  postValues => 'NONE'),
+        O(type => 'BackendRequestAction', url => "$API?action=home",                id => 'home',     postValues => 'NONE'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh$m", id => 'refresh', postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=flip$m",    id => 'flip',    postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=quote$m",   id => 'preview', postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=orders$m",  id => 'orders',  postValues => 'VALID'),
         O(type => 'ReloadAction', id => 'reload'),
         # local (no network): typing a new amount drops a quote that no longer matches it
         O(type => 'ChangeSiteAction', id => 'clearQuote', newContent => O(view => quote_placeholder())),
@@ -404,7 +480,6 @@ sub mosaik_replace {    # ChangeSiteAction: the element with the same id is repl
 
 sub act_app {
     my $reg = registry();
-    my $s   = clean_state({}, $reg);
     out_json(O(
         manifest => O(
             appName               => 'SigmaSwap',
@@ -416,9 +491,11 @@ sub act_app {
             cacheLifetime         => N(3600),
         ),
         actions => [ base_actions() ],
-        view    => main_view($reg, $s),
+        view    => home_view($reg),
     ));
 }
+
+sub act_home { mosaik_replace(home_view(registry())) }
 
 sub lookup_balance {
     my ($s) = @_;
@@ -443,6 +520,140 @@ sub act_flip {
     mosaik_replace(main_view($reg, $s, lookup_balance($s)));
 }
 
+# ---- status of a submitted swap/order
+# The wallet tells us nothing after signing, so each quote carries a random id.
+# When the wallet fetches the transaction we note its id under that random id;
+# afterwards the status screen looks the transaction up on the chain.
+
+sub new_nonce {
+    open(my $fh, '<:raw', '/dev/urandom') or return undef;
+    my $n = read($fh, my $buf, 16);
+    close $fh;
+    return (defined $n && $n == 16) ? unpack('H*', $buf) : undef;
+}
+
+sub record_file {
+    my ($nonce) = @_;
+    return undef unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/;
+    my $base = cache_dir() or return undef;
+    my $dir = File::Spec->catdir($base, 'tx');
+    mkdir $dir, 0770 unless -d $dir;
+    return (-d $dir && -w $dir) ? File::Spec->catfile($dir, "$nonce.json") : undef;
+}
+
+sub save_record {
+    my ($nonce, $rec) = @_;
+    my $file = record_file($nonce) or return;
+    my $tmp = "$file.$$";
+    if (open(my $fh, '>', $tmp)) {
+        print {$fh} JSON::PP->new->utf8->encode($rec);
+        close $fh;
+        rename($tmp, $file) or unlink $tmp;
+    }
+    # housekeeping, now and then: records are only useful for a day or two
+    if (int(rand(25)) == 0 && opendir(my $dh, File::Spec->catdir(cache_dir(), 'tx'))) {
+        for my $f (grep { /^[0-9a-f]{32}\.json\z/ } readdir $dh) {
+            my $p = File::Spec->catfile(cache_dir(), 'tx', $f);
+            unlink $p if time - ((stat $p)[9] || time) > 2 * 86400;
+        }
+        closedir $dh;
+    }
+}
+
+sub load_record {
+    my ($nonce) = @_;
+    my $file = record_file($nonce) or return undef;
+    open(my $fh, '<', $file) or return undef;
+    local $/;
+    my $d = eval { JSON::PP->new->utf8->decode(scalar <$fh>) };
+    close $fh;
+    return ref $d eq 'HASH' ? $d : undef;
+}
+
+sub status_box {
+    my ($title, $lines, $buttons) = @_;
+    my @rows = (child(label($title, 'BODY1BOLD'), align => 'START'));
+    push @rows, map { child(ref $_ ? $_ : label($_, 'BODY1'), align => 'START') } @$lines;
+    push @rows, @$buttons;
+    return O(type => 'Box', id => 'quote',
+             children => [ child(card(column(\@rows, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), hAlign => 'JUSTIFY') ]);
+}
+
+sub act_status {
+    my $nonce = $cgi->url_param('n');
+    return mosaik_dialog('Unknown swap.') unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/;
+    my $reg    = registry();
+    my $self   = O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&n=$nonce", id => 'status', postValues => 'NONE');
+    my $again  = button('Refresh status', 'status', style => 'SECONDARY');
+    my $new    = button('Back to the form', 'clearQuote', style => 'TEXT');
+    my $what   = $MODE eq 'order' ? 'order' : 'swap';
+
+    my $rec = load_record($nonce);
+    if (!$rec) {
+        return mosaik_replace(status_box("Waiting for your wallet", [
+            "Your wallet has not picked up this $what yet. If you cancelled signing, nothing happened.",
+        ], [ $again, $new ]), $self);
+    }
+    my $r = chain('status', { map { $_ => $rec->{$_} } qw(tx_id watch_box order_box mode address to) });
+    return mosaik_dialog($r->{error} || 'Could not check the status. Please try again.') unless $r->{ok};
+
+    my $summary = describe_amount($reg, $rec->{from}, $rec->{amount}) . " \x{2192} " . ($rec->{to} =~ /^[0-9a-f]{64}\z/ ? ($reg->{tokens}{ $rec->{to} }{ticker} // 'token') : 'token');
+    my $web = cfg('EXPLORER_WEB_URL', 'https://explorer.ergoplatform.com/en/transactions/');
+    my @extra = ($self, O(type => 'BrowserAction', url => $web . $rec->{tx_id}, id => 'viewTx'));
+    my $view  = button('View transaction', 'viewTx', style => 'TEXT');
+    my $age   = time - ($rec->{t} || time);
+    my $state = $r->{state} // 'unknown';
+    my ($title, @lines, @buttons);
+
+    if ($state eq 'confirmed') {
+        $title   = 'Swap complete';
+        @lines   = ($summary, 'You received ' . describe_amount($reg, $rec->{to}, $rec->{out}) . '.');
+        @buttons = ($view, $new);
+    }
+    elsif ($state eq 'executed') {
+        $title   = 'Order executed';
+        @lines   = ($summary, defined $r->{received} ? 'You received ' . describe_amount($reg, $rec->{to}, $r->{received}) . '.'
+                                                     : 'The bot completed your order.');
+        @buttons = ($view, $new);
+    }
+    elsif ($state eq 'order_open' || $state eq 'executing') {
+        $title   = $state eq 'executing' ? 'Order is being executed' : 'Order is waiting for a bot';
+        @lines   = ($summary, 'This usually takes a few minutes. If the price is below your minimum it waits; '
+                              . 'you can cancel it under "My open orders".');
+        @buttons = ($again, $view, $new);
+    }
+    elsif ($state eq 'cancelled') {
+        $title   = 'Order cancelled';
+        @lines   = ($summary, 'The order was refunded to your address.');
+        @buttons = ($view, $new);
+    }
+    elsif ($state eq 'pending') {
+        $title   = $MODE eq 'order' ? 'Order submitted' : 'Swap submitted';
+        @lines   = ($summary, 'Waiting for the next block (about two minutes).');
+        @buttons = ($again, $view, $new);
+    }
+    elsif ($state eq 'failed') {
+        $title   = $MODE eq 'order' ? 'Order was not placed' : 'Swap did not go through';
+        @lines   = ($summary, $MODE eq 'order'
+                        ? 'The funds it needed were spent by another transaction first. Nothing was lost. Preview again.'
+                        : 'Someone else traded in this pool first. Nothing was spent. Preview again for a fresh price.');
+        @buttons = (button('Preview again', 'preview'), $new);
+    }
+    elsif ($age < 180) {
+        $title   = 'Waiting for the network';
+        @lines   = ($summary, 'Your transaction has not shown up yet. This can take a moment after signing. '
+                              . 'If you cancelled signing, nothing happened.');
+        @buttons = ($again, $new);
+    }
+    else {
+        $title   = 'Not found on the network';
+        @lines   = ($summary, 'Your transaction never appeared. If you cancelled signing, nothing happened. '
+                              . "Otherwise check your wallet's history before trying again.");
+        @buttons = ($again, $new);
+    }
+    mosaik_replace(status_box($title, \@lines, \@buttons), @extra);
+}
+
 sub act_quote {
     my $reg = registry();
     my $s   = clean_state(posted_values(), $reg);
@@ -464,7 +675,9 @@ sub act_quote {
     my $bps   = $q->{impact_bps} + 0;
 
     # ---- order mode: the same swap, executed by an ErgoDex bot (ERG pairs only)
-    my $order = ($s->{mode} eq 'order' && ref $q->{order} eq 'HASH') ? $q->{order} : undef;
+    my $order = ($MODE eq 'order' && ref $q->{order} eq 'HASH') ? $q->{order} : undef;
+    return mosaik_dialog('Orders are only available for pairs with ERG. Go back and choose "Direct swap" for this pair.')
+        if $MODE eq 'order' && !$order;
     my ($show_out, $show_min, $ex_fee) = ($q->{out}, $min_out->bstr, undef);
     if ($order) {
         # the bot's fee grows with the output: min_ex_fee at the minimum output
@@ -510,8 +723,9 @@ sub act_quote {
                                                : 'The execution fee is paid in ERG on top; the unused part comes back. ')
                             . 'Until it is executed you can cancel it under "My open orders".',
                             'BODY2', color => 'SECONDARY'), align => 'START') if $order;
-    push @rows, child(label('Orders are only available for pairs with ERG, so this is a direct swap.',
-                            'BODY2', color => 'SECONDARY'), align => 'START') if $s->{mode} eq 'order' && !$order;
+    push @rows, child(label('Priced on top of ' . ($q->{pending} == 1 ? '1 swap' : "$q->{pending} swaps")
+                            . ' already waiting in this pool.', 'BODY2', color => 'SECONDARY'), align => 'START')
+        if !$order && ($q->{pending} || 0) > 0;
     push @rows, child(label("Warning: this swap moves the pool price by " . fmt_pct($bps)
                             . ". You will receive noticeably less than the market rate.", 'BODY2BOLD', color => 'PRIMARY'),
                       align => 'START') if $bps >= 500;
@@ -541,7 +755,15 @@ sub act_quote {
         my $url = 'ergopay://' . ergopay_host() . '/api.pl?action=ergopay'
                 . "&p=$pool->{id}&f=$s->{from}&a=$s->{amount}&m=" . $min_out->bstr . "&addr=$s->{address}"
                 . ($order ? '&o=1' : '');
-        push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay', onFinished => 'refresh');
+        # a random id links this quote to the transaction the wallet is about to fetch (see act_status)
+        my $nonce = new_nonce();
+        if (defined $nonce && record_file($nonce)) {
+            $url .= "&n=$nonce";
+            push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&n=$nonce",
+                           id => 'status', postValues => 'NONE');
+        }
+        push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay',
+                       onFinished => (defined $nonce && record_file($nonce)) ? 'status' : 'refresh');
         push @rows, button($order ? 'Place order' : "Swap $from->{ticker} for $to->{ticker}", 'pay'),
                     button('Refresh quote', 'preview', style => 'TEXT');
     }
@@ -602,7 +824,7 @@ sub act_orders {
 sub ergopay_error { out_json(O(message => $_[0], messageSeverity => 'ERROR')) }
 
 sub act_ergopay {
-    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r);
+    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n);
     return ergopay_refund(\%p) if defined $p{r};
     my $order = (defined $p{o} && $p{o} eq '1') ? 1 : 0;
     for my $k (qw(p f)) {
@@ -627,6 +849,11 @@ sub act_ergopay {
     my ($from, $to) = @{ $reg->{tokens} }{ $r->{from}, $r->{to} };
     return ergopay_error('The swap could not be prepared. Please try again.') unless $from && $to;
     warn "sigmaswap: built " . ($order ? 'order' : 'swap') . " tx $r->{tx_id} pool " . substr($p{p}, 0, 8) . "\n";    # audit trail, public data only
+    save_record($p{n}, {
+        t => time, mode => ($order ? 'order' : 'direct'), tx_id => $r->{tx_id}, watch_box => $r->{watch_box},
+        order_box => $r->{order_box}, address => $r->{address}, from => $r->{from}, to => $r->{to},
+        amount => $r->{amount}, out => $r->{out},
+    }) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/;
     if ($order) {
         return out_json(O(
             reducedTx       => $r->{reduced_tx},

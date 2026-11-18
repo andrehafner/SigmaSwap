@@ -68,6 +68,7 @@ MIN_BOX_VALUE_PER_BYTE = 360
 MAX_TOKENS_PER_BOX = 80          # keeps a change box well under the 4096-byte box limit
 MAX_USER_INPUTS = 60
 MAX_USER_BOXES_SCANNED = 300
+MAX_PENDING_CHAIN = 30           # how many unconfirmed swaps on one pool we are willing to build on
 HTTP_TIMEOUT = 15
 
 
@@ -186,6 +187,8 @@ def _asset(a):
 class Pool(object):
     """Reserves + fee of one pool, read from its (validated) on-chain box."""
 
+    pending = 0     # number of unconfirmed swaps this box sits on top of
+
     def __init__(self, box_json):
         from ergo_lib_python.chain import ErgoBox, NonMandatoryRegisterId
         self.json = box_json
@@ -225,15 +228,59 @@ class Pool(object):
         return to_id, out, r_in, r_out
 
 
+def mempool_txs(cfg, address):
+    """Unconfirmed transactions touching `address` ([] when unavailable or switched off).
+
+    Best effort by design: if the explorer's mempool view is missing or wrong, the
+    worst case is a transaction the network rejects, which costs the user nothing.
+    """
+    if not cfg.get("use_mempool", True):
+        return []
+    try:
+        page = explorer(cfg, "mempool/transactions/byAddress/%s?limit=100"
+                        % urllib.parse.quote(address, safe="")) or {}
+        return [t for t in (page.get("items") or []) if isinstance(t, dict)]
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: mempool lookup failed, using confirmed state: %s\n" % str(e)[:200])
+        return []
+
+
 def load_pool(cfg, pool_id):
+    """The pool's newest box: the confirmed one, advanced over swaps still in the mempool.
+
+    Building on top of pending swaps lets several swaps on one pool land in the same
+    block instead of all but the first being rejected.
+    """
     res = explorer(cfg, "boxes/unspent/byTokenId/" + pool_id)
     items = (res or {}).get("items") or []
     # the pool NFT (first token, amount 1) identifies the pool box
-    items = [b for b in items if b.get("assets") and b["assets"][0].get("tokenId") == pool_id
-             and int(b["assets"][0].get("amount", 0)) == 1]
+    def is_pool_box(b):
+        return bool(b.get("assets")) and b["assets"][0].get("tokenId") == pool_id \
+            and int(b["assets"][0].get("amount", 0)) == 1
+    items = [b for b in items if is_pool_box(b)]
     if len(items) != 1:
         raise SwapError("Pool not found.")
-    return Pool(items[0])
+    pool = Pool(items[0])
+    pool.pending = 0
+
+    txs = mempool_txs(cfg, items[0].get("address") or "")
+    spender = {}
+    for t in txs:
+        for i in t.get("inputs") or []:
+            spender[i.get("boxId")] = t
+    current = items[0]
+    while pool.pending < MAX_PENDING_CHAIN and current.get("boxId") in spender:
+        nxt = [o for o in (spender[current["boxId"]].get("outputs") or [])
+               if is_pool_box(o) and o.get("ergoTree") == current.get("ergoTree")]
+        if len(nxt) != 1:
+            break
+        try:
+            candidate = Pool(nxt[0])      # same validation as a confirmed pool box (incl. box id check)
+        except Exception:
+            break
+        candidate.pending = pool.pending + 1
+        pool, current = candidate, nxt[0]
+    return pool
 
 
 def impact_bps(amount_in, amount_out, r_in, r_out, fee_num):
@@ -259,6 +306,7 @@ def cmd_quote(req):
         "amount": str(amount), "out": str(out),
         "fee_num": pool.fee_num, "fee_denom": FEE_DENOM,
         "impact_bps": impact_bps(amount, out, r_in, r_out, pool.fee_num),
+        "pending": pool.pending,
         "reserve_in": str(r_in), "reserve_out": str(r_out),
     }
     if pool.kind == "n2t":
@@ -294,18 +342,37 @@ def change_box_min_value(n_tokens):
 
 
 def fetch_user_boxes(cfg, address):
-    from ergo_lib_python.chain import ErgoBox
-    boxes, offset = [], 0
+    """Spendable boxes of the address, taking its own unconfirmed transactions into account:
+    boxes already spent in the mempool are dropped, unconfirmed change is added."""
+    from ergo_lib_python.chain import Address, ErgoBox
+    boxes, offset = {}, 0
     while offset < MAX_USER_BOXES_SCANNED:
         page = explorer(cfg, "boxes/unspent/byAddress/%s?limit=100&offset=%d"
                         % (urllib.parse.quote(address, safe=""), offset)) or {}
         items = page.get("items") or []
         for b in items:
-            boxes.append(ErgoBox.from_json(b))
+            box = ErgoBox.from_json(b)
+            boxes[hexid(box.box_id)] = box
         offset += 100
         if len(items) < 100:
             break
-    return boxes
+
+    txs = mempool_txs(cfg, address)
+    if txs:
+        own_tree = bytes(Address(address).ergo_tree()).hex()
+        spent = set(i.get("boxId") for t in txs for i in (t.get("inputs") or []))
+        for t in txs:
+            for o in t.get("outputs") or []:
+                if o.get("ergoTree") != own_tree or o.get("boxId") in spent:
+                    continue
+                try:
+                    box = ErgoBox.from_json(o)
+                    boxes[hexid(box.box_id)] = box
+                except Exception:
+                    pass
+        for box_id in spent:
+            boxes.pop(box_id, None)
+    return list(boxes.values())
 
 
 def select_inputs(boxes, need_erg, need_token_id, need_token_amt):
@@ -494,6 +561,7 @@ def cmd_build(req):
         "pool": pool.nft, "from": from_id, "to": to_id,
         "amount": str(amount), "out": str(out), "miner_fee": str(fee),
         "inputs": len(inputs), "height": height,
+        "watch_box": hexid(pool.box.box_id), "pending": pool.pending,
     }
 
 
@@ -692,6 +760,7 @@ def build_order(req):
         "amount": str(amount), "out": str(out), "min_out": str(min_out),
         "ex_fee": str(ex_fee), "max_ex_fee": str(op["max_ex_fee"]), "miner_fee": str(fee),
         "inputs": len(chosen), "height": height,
+        "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id),
     }
 
 
@@ -799,6 +868,67 @@ def cmd_refund(req):
     }
 
 
+# ---------------------------------------------------------------- status ----
+
+def _tx_or_none(cfg, tx_id):
+    return explorer(cfg, "transactions/" + tx_id)
+
+
+def cmd_status(req):
+    """What happened to a transaction this app built. Read-only, from public chain data.
+
+    states: confirmed | pending | failed | unknown        (any mode)
+            order_open | executed | cancelled              (order mode, once the order confirmed)
+    """
+    cfg = req["cfg"]
+    tx_id = req_token_id(req.get("tx_id"), "transaction")
+    watch = req_token_id(req.get("watch_box"), "transaction")
+    mode = req.get("mode")
+    address = req.get("address")
+
+    tx = _tx_or_none(cfg, tx_id)
+    if tx and tx.get("inclusionHeight"):
+        res = {"state": "confirmed", "confirmations": int(tx.get("numConfirmations") or 0)}
+        if mode != "order":
+            return res
+        order_box = req_token_id(req.get("order_box"), "order")
+        b = explorer(cfg, "boxes/" + order_box) or {}
+        spent_by = b.get("spentTransactionId")
+        if not spent_by:
+            # executed/cancelled but not yet in a block?
+            req_address(address)
+            for t in mempool_txs(cfg, b.get("address") or ""):
+                if any(i.get("boxId") == order_box for i in t.get("inputs") or []):
+                    res["state"] = "executing"
+                    return res
+            res["state"] = "order_open"
+            return res
+        stx = _tx_or_none(cfg, spent_by) or {}
+        outs = stx.get("outputs") or []
+        if len(stx.get("inputs") or []) >= 2 and len(outs) >= 2:
+            reward = outs[1]          # the order contract fixes the user's reward at output 1
+            res["state"] = "executed"
+            assets = reward.get("assets") or []
+            if req.get("to") == ERG_ID:
+                res["received"] = str(max(0, int(reward.get("value", 0)) - int(b.get("value", 0))))
+            elif assets and assets[0].get("tokenId") == req.get("to"):
+                res["received"] = str(int(assets[0].get("amount", 0)))
+        else:
+            res["state"] = "cancelled"
+        return res
+
+    # not in a block: is it waiting in the mempool?
+    if address:
+        req_address(address)
+        if any(t.get("id") == tx_id for t in mempool_txs(cfg, address)):
+            return {"state": "pending"}
+    # did something else spend the box our transaction needed? then ours can never confirm
+    b = explorer(cfg, "boxes/" + watch)
+    if b and b.get("spentTransactionId") and b["spentTransactionId"] != tx_id:
+        return {"state": "failed"}
+    return {"state": "unknown"}
+
+
 # ------------------------------------------------------------------ main ----
 
 def cmd_health(req):
@@ -812,7 +942,7 @@ def cmd_health(req):
 
 
 COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balance": cmd_balance,
-            "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund}
+            "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status}
 
 
 def main():

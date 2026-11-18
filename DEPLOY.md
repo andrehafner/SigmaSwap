@@ -137,8 +137,10 @@ cd /data/AAP_Storage/apps/sigmaswap && sudo git pull && sudo ./redeploy.sh
 If the Mosaik screen changed, bump `APP_VERSION` in `api.pl`: wallets that have the app open then
 reload it instead of mixing old and new screens.
 
-Order mode (v2) needs nothing new on the server: no new packages, no SELinux or Apache changes.
-The optional `ORDER_*` keys are described in `sigmaswap.env.example`.
+Order mode, pending-swap chaining and the status screen (v2/v3) need nothing new on the server: no
+new packages, no SELinux or Apache changes. Status notes are written to `tx/` inside the existing
+cache directory. The optional keys (`ORDER_*`, `USE_MEMPOOL`, `EXPLORER_WEB_URL`) are described in
+`sigmaswap.env.example`.
 
 ## Troubleshooting
 
@@ -177,6 +179,9 @@ health says "The service is temporarily unavailable." / "... is busy"
 App opens but "The pool list is unavailable right now"
   -> G2 for api.ergodex.io. A previously cached list keeps being used while ErgoDex is down;
      on a brand-new install there is no cache yet.
+
+Status screen always says "Waiting for your wallet"
+  -> the app cannot write CACHE_DIR/tx/: same fix as the next entry (cache dir + SELinux rule).
 
 pools.json never appears (G5)
   -> cache dir missing or not apache-writable / not httpd_sys_rw_content_t: step 4 + step 5.

@@ -27,7 +27,7 @@
         <ol>
             <li>Copy the address below.</li>
             <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
-            <li>Choose your wallet address, the tokens and the amount, preview, then swap.</li>
+            <li>Pick direct swap or order, choose your wallet address, the tokens and the amount, preview, then swap.</li>
         </ol>
         <div class="copy">
             <input id="appUrl" type="text" readonly aria-label="SigmaSwap dApp address">
@@ -39,11 +39,15 @@
     <section class="card">
         <h2>How a swap works</h2>
         <ul class="plain">
-            <li><strong>Direct.</strong> One transaction between your wallet and the pool: it either
-                completes exactly as previewed or does not happen at all.</li>
+            <li><strong>Direct swap.</strong> One transaction between your wallet and the pool: it either
+                completes exactly as previewed or does not happen at all. Nobody can trade ahead of you.</li>
+            <li><strong>Order.</strong> For busy pools (pairs with ERG): your funds go into an ErgoDex order
+                and a bot completes the swap for a small fee. A waiting order is public and can be
+                front-run, so you may receive only your minimum amount. You can cancel while it waits.</li>
             <li><strong>Non-custodial.</strong> SigmaSwap only prepares the transaction. Your wallet shows it and
                 signs it; your keys and funds never leave your wallet.</li>
-            <li><strong>No service fee.</strong> You pay the pool's own fee and the Ergo network fee.</li>
+            <li><strong>No service fee.</strong> You pay the pool's own fee and the Ergo network fee
+                (plus the bot's execution fee for an order).</li>
         </ul>
     </section>
 
