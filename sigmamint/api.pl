@@ -34,7 +34,7 @@ use Digest::SHA qw(sha256_hex hmac_sha256_hex);
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 2;
+use constant APP_VERSION => 3;
 use constant ERG         => '0' x 64;
 
 my $MAX_MB = cfg('MINT_MAX_UPLOAD_MB', 10) + 0;
@@ -66,6 +66,7 @@ my $SESSION = $cgi->url_param('s');
 $SESSION = new_session() unless session_ok($SESSION);
 
 my %mosaik  = ('' => \&act_app, home => \&act_home, form => \&act_form, preview => \&act_preview, status => \&act_status);
+my %plain   = (notify => \&act_notify);
 my %browser = (config => \&web_config, upload => \&web_upload);
 
 if ($cgi->cgi_error) {
@@ -77,6 +78,9 @@ elsif ($action eq 'ergopay') {
 }
 elsif (exists $mosaik{$action}) {
     eval { $mosaik{$action}->(); 1 } or do { warn "sigmamint: '$action' failed: $@"; mosaik_dialog('Something went wrong. Please try again.') };
+}
+elsif (exists $plain{$action}) {
+    eval { $plain{$action}->(); 1 } or do { warn "sigmamint: '$action' failed: $@"; notify_json(undef, 0, 240) };
 }
 elsif (exists $browser{$action}) {
     eval { $browser{$action}->(); 1 } or do { warn "sigmamint: '$action' failed: $@"; die_json('Something went wrong') };
@@ -320,6 +324,7 @@ sub act_app {
             appName => 'SigmaMint', appDescription => 'Mint your own tokens and NFTs on Ergo.',
             iconUrl => "$BASE/icon.png", appVersion => N(APP_VERSION), targetMosaikVersion => N(2),
             targetCanvasDimension => 'COMPACT_WIDTH', cacheLifetime => N(3600),
+            notificationCheckUrl => "$API?action=notify",
         ),
         actions => [ base_actions() ],
         view    => home_view(),
@@ -344,6 +349,7 @@ sub act_preview {
     return mosaik_dialog($err) unless $d;
     my $nonce = new_draft($d);
     return mosaik_dialog('Minting is unavailable right now. Please try again later.') unless $nonce;
+    watch_add('mint', $nonce);    # so the wallet's notification check can report the outcome
 
     my $fee = cfg('MINER_FEE', 1100000) + 0;
     my @rows;
@@ -423,6 +429,18 @@ sub act_status {
                  $row->('Your transaction has not shown up yet. This can take a moment after signing.'), $again, $back);
     }
     mosaik_replace(result_box(\@rows), $self, @extra);
+}
+
+sub act_notify {
+    notify_json(notifications('mint', sub {
+        my ($it) = @_;
+        my ($state, $rec) = mint_status($it->{n});
+        $rec ||= $it;
+        return (1, 'Minted: you now hold ' . describe($rec) . '.')                   if $state eq 'confirmed';
+        return (1, 'Your mint of ' . describe($rec) . ' did not go through. Nothing was lost.') if $state eq 'failed';
+        return (1) if $state =~ /^(none|lost)\z/;
+        return (0);
+    }));
 }
 
 # ================================================================= ErgoPay ==

@@ -37,7 +37,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 5;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 6;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -80,6 +80,7 @@ my %actions = (
     'ergopay' => \&act_ergopay,
     'pools'   => \&act_pools,
     'health'  => \&act_health,
+    'notify'  => \&act_notify,
 );
 
 if ($cgi->cgi_error) {
@@ -225,6 +226,10 @@ sub clean_state {
     my %slip = SLIPPAGE;
     my $sl   = $v->{slippage};
     $s{slippage} = (defined $sl && !ref $sl && exists $slip{$sl}) ? $sl : 100;
+    if ($MODE eq 'order' && defined $s{to}) {    # optional limit: "receive at least", in the receive token's units
+        my $l = $v->{ 'limit_' . $reg->{tokens}{ $s{to} }{decimals} };
+        $s{limit} = "$l" if defined $l && !ref $l && "$l" =~ /^[1-9]\d{0,18}\z/;
+    }
     if ($MODE eq 'order') {    # orders exist for ERG pairs only
         my $erg = ERG;
         $s{from} = $erg unless defined $s{from} && ($s{from} eq $erg || $reg->{pair}{ $s{from} }{$erg});
@@ -369,6 +374,17 @@ sub main_view {
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
         child(label('You receive', 'BODY1BOLD'), align => 'START'),
         child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token'), align => 'JUSTIFY');
+    if ($order && !$SIMPLE && defined $s->{to}) {
+        my $to = $tok->{ $s->{to} };
+        push @form,
+            child(label('Limit (optional)', 'BODY1BOLD'), align => 'START'),
+            child(O(type => 'DecimalInputField', id => "limit_$to->{decimals}",
+                    value => defined $s->{limit} ? N($s->{limit}) : undef,
+                    placeholder => "Receive at least, in $to->{ticker}",
+                    onValueChanged => 'clearQuote', minValue => N(0), scale => N($to->{decimals})), align => 'JUSTIFY'),
+            child(label('Leave empty to swap at the current price. With a limit, the order waits until the pool '
+                        . 'can pay that much.', 'BODY2', color => 'SECONDARY'), align => 'START');
+    }
     # simple mode has no slippage control: the 1 % default applies
     push @form,
         child(label($order ? 'Slippage tolerance (sets your minimum)' : 'Slippage tolerance', 'BODY1BOLD'), align => 'START'),
@@ -430,6 +446,7 @@ sub act_app {
             targetMosaikVersion   => N(2),
             targetCanvasDimension => 'COMPACT_WIDTH',
             cacheLifetime         => N(3600),
+            notificationCheckUrl  => "$API?action=notify",
         ),
         actions => [ base_actions() ],
         view    => home_view($reg),
@@ -575,6 +592,10 @@ sub act_quote {
     my $order = ($MODE eq 'order' && ref $q->{order} eq 'HASH') ? $q->{order} : undef;
     return mosaik_dialog('Orders are only available for pairs with ERG. Go back and choose "Direct swap" for this pair.')
         if $MODE eq 'order' && !$order;
+    # a limit replaces the slippage-based minimum; above today's price the order waits
+    my $limit = ($order && defined $s->{limit}) ? Math::BigInt->new($s->{limit}) : undef;
+    $min_out = $limit->copy if $limit;
+    my $waits = ($limit && $limit->bcmp(Math::BigInt->new($q->{out})) > 0) ? 1 : 0;
     my ($show_out, $show_min, $ex_fee) = ($q->{out}, $min_out->bstr, undef);
     if ($order) {
         # the bot's fee grows with the output: min_ex_fee at the minimum output
@@ -622,7 +643,20 @@ sub act_quote {
     push @rows, child(label("Warning: this swap moves the pool price by " . fmt_pct($bps)
                             . ". You will receive noticeably less than the market rate.", 'BODY2BOLD', color => 'PRIMARY'),
                       align => 'START') if $bps >= 500;
-    return finish_quote($q, $s, $from, $to, $pool, $min_out, $fee, $order, \@rows);
+    if ($waits) {    # a waiting limit order: say plainly what it is
+        @rows = (
+            $rows[0],
+            kv_row('You pay', $pay),
+            kv_row('You receive at least', fmt_amount($limit->bstr, $to->{decimals}) . " $to->{ticker}", style => 'HEADLINE2', color => 'PRIMARY'),
+            kv_row("Today's price would give", fmt_amount($q->{out}, $to->{decimals}) . " $to->{ticker}"),
+            child(label('This is a limit order. It waits until the pool can pay your limit; SigmaSwap checks every '
+                        . 'minute and completes it then. It may never fill if the price does not get there. You can '
+                        . 'cancel it any time under "My open orders". A fee deposit of ' . fmt_amount($order->{extra}, 9)
+                        . ' ERG is locked with it; the unused part comes back when it fills or when you cancel.',
+                        'BODY2', color => 'SECONDARY'), align => 'START'),
+        );
+    }
+    return finish_quote($q, $s, $from, $to, $pool, $min_out, $fee, $order, \@rows, $limit ? 1 : 0);
 }
 
 # Token logos are bundled PNGs (icons/<token id>.png, built by tools/fetch_icons.py);
@@ -646,7 +680,7 @@ sub detail_rows {
     push @rows,
         kv_row('Network fee', fmt_amount($fee, 9) . ' ERG'),
         kv_row('Minimum received', fmt_amount($show_min, $to->{decimals}) . " $to->{ticker}");
-    push @rows, child(label('An ErgoDex bot executes the order at the pool price at that moment, usually within a '
+    push @rows, child(label('A bot completes the order at the pool price at that moment, usually within a '
                             . 'few minutes, and never below the minimum. '
                             . ($s->{to} eq ERG ? 'The execution fee is taken from the ERG you receive. '
                                                : 'The execution fee is paid in ERG on top; the unused part comes back. ')
@@ -659,7 +693,7 @@ sub detail_rows {
 }
 
 sub finish_quote {    # balance check, Swap / Place order button, and the response
-    my ($q, $s, $from, $to, $pool, $min_out, $fee, $order, $rows) = @_;
+    my ($q, $s, $from, $to, $pool, $min_out, $fee, $order, $rows, $is_limit) = @_;
     my @rows = @$rows;
     my @extra;
     my $short = 0;
@@ -685,11 +719,12 @@ sub finish_quote {    # balance check, Swap / Place order button, and the respon
     else {
         my $url = 'ergopay://' . ergopay_host() . '/api.pl?action=ergopay'
                 . "&p=$pool->{id}&f=$s->{from}&a=$s->{amount}&m=" . $min_out->bstr . "&addr=$s->{address}"
-                . ($order ? '&o=1' : '');
+                . ($order ? '&o=1' : '') . ($is_limit ? '&l=1' : '');
         # a random id links this quote to the transaction the wallet is about to fetch (see act_status)
         my $nonce = new_nonce();
         if (defined $nonce && record_file($nonce)) {
             $url .= "&n=$nonce";
+            watch_add('swap', $nonce);    # so the wallet's notification check can report the outcome
             push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&simple=$SIMPLE&n=$nonce",
                            id => 'status', postValues => 'NONE');
         }
@@ -755,7 +790,7 @@ sub act_orders {
 sub ergopay_error { out_json(O(message => $_[0], messageSeverity => 'ERROR')) }
 
 sub act_ergopay {
-    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n);
+    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n l);
     return ergopay_refund(\%p) if defined $p{r};
     my $order = (defined $p{o} && $p{o} eq '1') ? 1 : 0;
     for my $k (qw(p f)) {
@@ -774,7 +809,8 @@ sub act_ergopay {
         unless $pool && ($pool->{x}{id} eq $p{f} || $pool->{y}{id} eq $p{f});
 
     my $r = chain('build', { pool => $p{p}, from => $p{f}, amount => $p{a}, min_out => $p{m}, address => $p{addr},
-                             mode => $order ? 'order' : 'direct' });
+                             mode => $order ? 'order' : 'direct',
+                             limit => ($order && defined $p{l} && $p{l} eq '1') ? JSON::PP::true : JSON::PP::false });
     return ergopay_error($r->{error} || 'The swap could not be prepared. Please try again.') unless $r->{ok};
 
     my ($from, $to) = @{ $reg->{tokens} }{ $r->{from}, $r->{to} };
@@ -783,14 +819,25 @@ sub act_ergopay {
     save_record($p{n}, {
         t => time, mode => ($order ? 'order' : 'direct'), tx_id => $r->{tx_id}, watch_box => $r->{watch_box},
         order_box => $r->{order_box}, address => $r->{address}, from => $r->{from}, to => $r->{to},
-        amount => $r->{amount}, out => $r->{out},
+        amount => $r->{amount}, out => $r->{out}, min_out => $r->{min_out}, limit => ($r->{limit} ? 1 : 0),
     }) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/;
+    order_register($r->{order_box}, $r->{address}) if $order;    # the completing bot watches it from now on
+    if ($order && $r->{limit}) {
+        return out_json(O(
+            reducedTx       => $r->{reduced_tx},
+            address         => $r->{address},
+            message         => 'SigmaSwap limit order: sell ' . fmt_amount($r->{amount}, $from->{decimals}) . " $from->{ticker} for at least "
+                               . fmt_amount($r->{min_out}, $to->{decimals}) . " $to->{ticker}. It waits until the price is reached; "
+                               . 'you can cancel it in SigmaSwap at any time. Network fee ' . fmt_amount($r->{miner_fee}, 9) . ' ERG.',
+            messageSeverity => 'INFORMATION',
+        ));
+    }
     if ($order) {
         return out_json(O(
             reducedTx       => $r->{reduced_tx},
             address         => $r->{address},
             message         => 'SigmaSwap order: sell ' . fmt_amount($r->{amount}, $from->{decimals}) . " $from->{ticker} for about "
-                               . fmt_amount($r->{out}, $to->{decimals}) . " $to->{ticker}. An ErgoDex bot executes it; execution fee up to "
+                               . fmt_amount($r->{out}, $to->{decimals}) . " $to->{ticker}. A bot completes it; execution fee up to "
                                . fmt_amount($r->{max_ex_fee}, 9) . ' ERG, network fee ' . fmt_amount($r->{miner_fee}, 9)
                                . ' ERG. You can cancel the order in SigmaSwap until it is executed.',
             messageSeverity => 'INFORMATION',
@@ -822,6 +869,32 @@ sub ergopay_refund {
                            . fmt_amount($r->{miner_fee}, 9) . ' ERG.',
         messageSeverity => 'INFORMATION',
     ));
+}
+
+# ---- notifications: the wallet asks now and then whether anything happened
+
+sub act_notify {
+    my $reg = registry();
+    notify_json(notifications('swap', sub {
+        my ($it) = @_;
+        my $r = chain('status', { map { $_ => $it->{$_} } qw(tx_id watch_box order_box mode address to) });
+        return (0) unless $r->{ok};
+        my $st   = $r->{state} // 'unknown';
+        my $what = describe_amount($reg, $it->{from}, $it->{amount});
+        if ($it->{mode} eq 'order') {
+            return (1, "Your order for $what was filled: you received "
+                       . describe_amount($reg, $it->{to}, $r->{received} // $it->{out}) . '.') if $st eq 'executed';
+            return (1) if $st eq 'cancelled';
+            return (1, "Your order for $what was not placed. Nothing was spent.") if $st eq 'failed';
+        }
+        else {
+            return (1, "Your swap of $what is complete: you received " . describe_amount($reg, $it->{to}, $it->{out}) . '.')
+                if $st eq 'confirmed';
+            return (1, "Your swap of $what did not go through. Nothing was spent.") if $st eq 'failed';
+        }
+        return (1) if $st eq 'unknown' && time - ($it->{t} || 0) > 86400;    # never signed: forget it
+        return (0);
+    }));
 }
 
 # ---- landing page helpers

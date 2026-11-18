@@ -758,7 +758,15 @@ def build_order(req):
 
     # the order box exactly as it will exist once this transaction confirms
     order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 0)
-    out, ex_fee = simulate_execution(pool, order_box, terms, address, amount, min_out, op, ctx, height)
+    # A limit order's minimum may be above what the pool pays today. Then the check
+    # runs against the pool as it will look when the price reaches the limit.
+    current_out = pool.quote(from_id, amount)[1]
+    limit = bool(req.get("limit")) and current_out < min_out
+    check_pool = pool_at_price(pool, from_id, amount, min_out) if limit else pool
+    out, ex_fee = simulate_execution(check_pool, order_box, terms, address, amount, min_out, op, ctx, height)
+    parsed = parse_order(json.loads(order_box.json()), bytes(pk_constant(address)))
+    if not parsed or not completing_tx(cfg, check_pool, parsed, ctx, height):
+        raise SwapError("This order could not be prepared. Please preview again.")
 
     reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
     return {
@@ -769,7 +777,7 @@ def build_order(req):
         "amount": str(amount), "out": str(out), "min_out": str(min_out),
         "ex_fee": str(ex_fee), "max_ex_fee": str(op["max_ex_fee"]), "miner_fee": str(fee),
         "inputs": len(chosen), "height": height,
-        "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id),
+        "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id), "limit": limit,
     }
 
 
@@ -807,7 +815,11 @@ def parse_order(box_json, pk_bytes=None):
                 if len(toks) != 1:
                     return None
                 (from_id, amount), to_id = toks[0], ERG_ID
-            return {"box": box, "box_id": hexid(box.box_id), "kind": kind,
+            from ergo_lib_python.chain import Address, NetworkPrefix
+            owner = Address.recreate_from_ergo_tree(
+                ErgoTree.from_bytes(b"\x00" + bytes(consts[ix["pk"]]))).to_str(NetworkPrefix.Mainnet)
+            return {"box": box, "box_id": hexid(box.box_id), "kind": kind, "owner": owner,
+                    "max_miner_fee": str(consts[ix["max_miner_fee"]].value),
                     "pool": bytes(consts[ix["pool"]].value).hex(),
                     "from": from_id, "to": to_id, "amount": str(amount),
                     "min_out": str(consts[ix["min_out"]].value), "value": str(box.value)}
@@ -875,6 +887,182 @@ def cmd_refund(req):
         "tx_id": hexid(unsigned.id), "address": addr_str, "mode": "refund",
         "from": o["from"], "amount": o["amount"], "value": str(box.value - fee), "miner_fee": str(fee),
     }
+
+
+# ------------------------------------------------------------------- bot ----
+# Orders placed through SigmaSwap are completed by SigmaSwap itself. Completing an
+# order needs NO key: the order contract lets anyone spend the order box as long as
+# the owner receives what the contract demands. A systemd timer runs
+# `sigmaswap.py bot` every minute; it looks at the orders SigmaSwap registered,
+# and when the pool can fill one at or above its minimum it builds the completing
+# transaction and broadcasts it. Everything left in the order box (the unused
+# execution-fee deposit) goes back to the owner; only the miner fee is spent.
+# This is what makes limit orders work: ErgoDex's own bots rarely pick up an order
+# that has been waiting.
+
+def pool_at_price(pool, from_id, amount, target_out):
+    """A copy of `pool` with its input reserve lowered until selling `amount` yields
+    `target_out`. Used to check, before a limit order is created, that the order
+    contract will accept execution once the price gets there."""
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, Token, TokenId
+    from ergo_lib_python.transaction import TxId
+    _to, _out, r_in, r_out = pool.quote(from_id, amount)
+    if target_out >= r_out:
+        raise SwapError("That limit can never be reached with this pool's liquidity.")
+    a_f = amount * pool.fee_num
+    new_in = (r_out * a_f // target_out - a_f) // FEE_DENOM
+    while new_in > 0 and (r_out * a_f) // (new_in * FEE_DENOM + a_f) < target_out:
+        new_in -= max(1, new_in // 1000000)
+    if new_in <= 0:
+        raise SwapError("That limit can never be reached with this pool's liquidity.")
+    tokens = list(pool.tokens)
+    value = pool.box.value
+    if from_id == ERG_ID:
+        value = max(new_in, 10000000)
+    else:
+        tokens[2] = (tokens[2][0], new_in)
+    cand = ErgoBoxCandidate(value=value, script=pool.box.ergo_tree, creation_height=pool.box.creation_height,
+                            tokens=[Token(TokenId(t), a) for t, a in tokens], registers=pool.registers)
+    synthetic = Pool(json.loads(ErgoBox.from_box_candidate(cand, TxId(b"\x00" * 32), 0).json()))
+    if synthetic.quote(from_id, amount)[1] < target_out:
+        raise SwapError("That limit can never be reached with this pool's liquidity.")
+    return synthetic
+
+
+def completing_tx(cfg, pool, order, ctx, height):
+    """The keyless transaction that fills `order` (a parse_order dict) from `pool`, or
+    None when the pool cannot fill it at its minimum right now.
+
+    outputs: [pool after the swap, everything else to the owner, miner fee]
+    """
+    from ergo_lib_python.chain import Address, ErgoBoxCandidate, Token, TokenId
+    from ergo_lib_python.transaction import Transaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection, Wallet
+    box = order["box"]
+    amount, min_out = int(order["amount"]), int(order["min_out"])
+    to_id, out, _r_in, r_out = pool.quote(order["from"], amount)
+    if out < min_out or out >= r_out:
+        return None
+    owner = Address(order["owner"])
+    fee = min(miner_fee(cfg), int(order["max_miner_fee"]))
+    if order["kind"] == "sell":
+        reward = ErgoBoxCandidate(value=box.value - amount - fee, script=owner.ergo_tree(),
+                                  creation_height=height, tokens=[Token(TokenId(to_id), out)])
+    else:
+        reward = ErgoBoxCandidate(value=box.value + out - fee, script=owner.ergo_tree(), creation_height=height)
+    inputs = [pool.box, box]
+    unsigned = TxBuilder(BoxSelection(inputs, []),
+                         [new_pool_candidate(pool, order["from"], amount, out, height), reward],
+                         height, fee, owner).build()
+    # both inputs are scripts that must evaluate to true by themselves: an empty
+    # wallet "signs" them, or raises if either contract rejects the transaction
+    signed_inputs = [Wallet([]).sign_tx_input(unsigned, i, inputs, [], ctx) for i in (0, 1)]
+    tx = Transaction(signed_inputs, [], unsigned.output_candidates)
+    return {"tx": tx, "tx_id": hexid(tx.id), "out": out, "fee": fee}
+
+
+def submit_tx(cfg, tx):
+    body = tx.json().encode("utf-8")
+    req = urllib.request.Request(cfg["explorer_url"].rstrip("/") + "/api/v1/mempool/transactions/submit",
+                                 data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": "sigmaswap/1"})
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def cmd_bot(req):
+    """One pass over the registered orders (CACHE_DIR/orders/<order box id>.json)."""
+    import os
+    import time
+    cfg = req["cfg"]
+    directory = req.get("dir") or ""
+    dry_run = bool(req.get("dry_run"))
+    if not os.path.isdir(directory):
+        return {"checked": 0, "filled": 0}
+    now = time.time()
+    pools, context = {}, None
+    checked = filled = 0
+    for name in sorted(os.listdir(directory)):
+        if not (name.endswith(".json") and is_hex64(name[:-5])):
+            continue
+        path = os.path.join(directory, name)
+        box_id = name[:-5]
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+            if now - float(rec.get("submitted", 0)) < 300:        # a fill is on its way: give it time
+                continue
+            b = explorer(cfg, "boxes/" + box_id)
+            if b is None:                                          # never signed, or not confirmed yet
+                if now - float(rec.get("t", now)) > 86400:
+                    os.remove(path)
+                continue
+            if b.get("spentTransactionId"):                        # filled or cancelled: nothing left to do
+                os.remove(path)
+                continue
+            order = parse_order(b)
+            if not order:
+                os.remove(path)
+                continue
+            checked += 1
+            if order["pool"] not in pools:
+                pools[order["pool"]] = load_pool(cfg, order["pool"])
+            if context is None:
+                context = chain_context(cfg)
+            done = completing_tx(cfg, pools[order["pool"]], order, context[0], context[1])
+            if not done:
+                continue
+            if not dry_run:
+                submit_tx(cfg, done["tx"])
+                rec["submitted"] = now
+                rec["fill_tx"] = done["tx_id"]
+                with open(path, "w") as f:
+                    json.dump(rec, f)
+            del pools[order["pool"]]                               # that pool box is now spent
+            filled += 1
+            sys.stderr.write("sigmaswap.py bot: %s order %s with tx %s\n"
+                             % ("would fill" if dry_run else "filled", box_id[:12], done["tx_id"]))
+        except Exception as e:
+            sys.stderr.write("sigmaswap.py bot: order %s skipped: %s: %s\n" % (box_id[:12], type(e).__name__, str(e)[:200]))
+    return {"checked": checked, "filled": filled}
+
+
+def read_env_file(path):
+    env = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                v = v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                env[k.strip()] = v
+    except OSError:
+        pass
+    return env
+
+
+def bot_main():
+    """Entry point for the systemd timer: `sigmaswap.py bot` (reads the app's env file itself)."""
+    import os
+    env = read_env_file(os.environ.get("APP_ENV_FILE", ""))
+    cache = env.get("CACHE_DIR") or ""
+    if (env.get("ORDER_BOT", "1") or "1") == "0" or not cache:
+        return 0
+    cfg = {
+        "explorer_url": env.get("EXPLORER_URL") or "https://api.ergoplatform.com",
+        "miner_fee": int(env.get("MINER_FEE") or 1100000),
+        "order_min_ex_fee": int(env.get("ORDER_MIN_EX_FEE") or 6000000),
+        "order_miner_fee": int(env.get("ORDER_MINER_FEE") or 2000000),
+        "use_mempool": (env.get("USE_MEMPOOL", "1") or "1") != "0",
+    }
+    res = cmd_bot({"cfg": cfg, "dir": os.path.join(cache, "orders")})
+    if res["filled"]:
+        sys.stderr.write("sigmaswap.py bot: checked %d, filled %d\n" % (res["checked"], res["filled"]))
+    return 0
 
 
 # ------------------------------------------------------------------ mint ----
@@ -1141,6 +1329,8 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
 def main():
     try:
         cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+        if cmd == "bot":
+            return bot_main()
         if cmd not in COMMANDS:
             raise SwapError("Unknown command.")
         req = json.loads(sys.stdin.read() or "{}")

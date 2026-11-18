@@ -11,9 +11,10 @@ use warnings;
 use Exporter 'import';
 use File::Spec;
 use JSON::PP ();
+use Digest::SHA qw(sha256_hex);
 use AppConfig qw(cfg);
 
-our @EXPORT = qw(O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
+our @EXPORT = qw(watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
 
 sub O     { my @kv = @_; my @o; while (@kv) { my ($k, $v) = splice(@kv, 0, 2); push @o, $k, $v if defined $v } return bless \@o, 'JObj' }
 
@@ -152,6 +153,112 @@ sub load_record {
     my $d = eval { JSON::PP->new->utf8->decode(scalar <$fh>) };
     close $fh;
     return ref $d eq 'HASH' ? $d : undef;
+}
+
+# ---- notifications -----------------------------------------------------------
+# The wallet identifies an installation with a random id it sends on every Mosaik
+# request (header Mosaik-guid; nothing personal). We keep, per installation, the
+# short list of things it started (a swap, an order, a mint) so that the wallet's
+# periodic "anything new?" check can be answered: "your order was filled".
+
+sub _watch_file {
+    my $g = $ENV{HTTP_MOSAIK_GUID};
+    return undef unless defined $g && $g =~ /^[A-Za-z0-9._-]{8,80}\z/;
+    my $cd = cache_dir() or return undef;
+    my $dir = File::Spec->catdir($cd, 'watch');
+    mkdir $dir, 0770 unless -d $dir;
+    return (-d $dir && -w $dir) ? File::Spec->catfile($dir, substr(sha256_hex("guid|$g"), 0, 32) . '.json') : undef;
+}
+
+sub _watch_load {
+    my ($file) = @_;
+    my $w;
+    if (open(my $fh, '<', $file)) {
+        local $/;
+        $w = eval { JSON::PP->new->utf8->decode(scalar <$fh>) };
+        close $fh;
+    }
+    $w = {} unless ref $w eq 'HASH';
+    $w->{items} = [] unless ref $w->{items} eq 'ARRAY';
+    $w->{msg}   = {} unless ref $w->{msg} eq 'HASH';
+    return $w;
+}
+
+sub _watch_save {
+    my ($file, $w) = @_;
+    my $tmp = "$file.$$";
+    if (open(my $fh, '>', $tmp)) {
+        print {$fh} JSON::PP->new->utf8->encode($w);
+        close $fh;
+        rename($tmp, $file) or unlink $tmp;
+    }
+}
+
+# remember that this installation started something under note id $nonce
+sub watch_add {
+    my ($app, $nonce) = @_;
+    my $file = _watch_file() or return;
+    my $w = _watch_load($file);
+    my @keep = grep { ref $_ eq 'HASH' && time - ($_->{t} || 0) < 60 * 86400 } @{ $w->{items} };
+    unshift @keep, { app => $app, n => $nonce, t => time };
+    splice(@keep, 40) if @keep > 40;
+    $w->{items} = \@keep;
+    _watch_save($file, $w);
+}
+
+# Answer the wallet's check for one app. $check->($item) returns (is_final, message);
+# an item becomes final once and its message (if any) is what the wallet shows.
+# -> (message or undef, timestamp, minutes until the next check)
+sub notifications {
+    my ($app, $check) = @_;
+    my $file = _watch_file() or return (undef, 0, 240);
+    my $w = _watch_load($file);
+    my ($open, $changed, $looked) = (0, 0, 0);
+    for my $it (@{ $w->{items} }) {
+        next unless ref $it eq 'HASH' && ($it->{app} // '') eq $app && !$it->{done};
+        if (!$it->{tx_id}) {    # has the wallet fetched the transaction yet?
+            my $rec = load_record($it->{n});
+            if ($rec && $rec->{tx_id}) {
+                $it->{$_} = $rec->{$_} for grep { defined $rec->{$_} } keys %$rec;
+                $changed = 1;
+            }
+            elsif (time - ($it->{t} || 0) > 3600) { $it->{done} = 1; $changed = 1; next }
+            else                                   { $open++; next }
+        }
+        if (++$looked > 6) { $open++; next }    # bound the work of one check
+        my ($final, $msg) = $check->($it);
+        if ($final) {
+            $it->{done} = 1;
+            $w->{msg}{$app} = { text => $msg, ts => time } if defined $msg;
+            $changed = 1;
+        }
+        else { $open++ }
+    }
+    _watch_save($file, $w) if $changed;
+    my $m = $w->{msg}{$app};
+    my $fresh = ref $m eq 'HASH' && defined $m->{text} && time - ($m->{ts} || 0) < 3 * 86400;
+    return ($fresh ? $m->{text} : undef, $fresh ? $m->{ts} : 0, $open ? 5 : 240);
+}
+
+sub notify_json {    # Mosaik NotificationCheckResponse
+    my ($text, $ts, $next) = @_;
+    out_json(O(message => $text, messageTs => N(($ts || 0) * 1000), nextCheck => N($next)));
+}
+
+# ---- order registry: what the completing bot (sigmaswap.py bot) looks at
+sub order_register {
+    my ($box_id, $address) = @_;
+    return unless defined $box_id && $box_id =~ /^[0-9a-f]{64}\z/;
+    my $cd = cache_dir() or return;
+    my $dir = File::Spec->catdir($cd, 'orders');
+    mkdir $dir, 0770 unless -d $dir;
+    return unless -d $dir && -w $dir;
+    my $file = File::Spec->catfile($dir, "$box_id.json");
+    return if -e $file;
+    if (open(my $fh, '>', $file)) {
+        print {$fh} JSON::PP->new->utf8->encode({ order_box => $box_id, address => $address, t => time });
+        close $fh;
+    }
 }
 
 1;

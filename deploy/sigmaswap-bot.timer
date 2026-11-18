@@ -1,0 +1,11 @@
+# Runs the SigmaSwap order bot every minute. Install as /etc/systemd/system/sigmaswap-bot.timer
+[Unit]
+Description=SigmaSwap order bot, every minute
+
+[Timer]
+OnCalendar=*:*:20
+AccuracySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
