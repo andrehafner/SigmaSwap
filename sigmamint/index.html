@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaMint</title>
+<meta name="description" content="Mint your own tokens and NFTs on Ergo, inside your Ergo wallet.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="mint.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaMint</h1>
+        <p class="sub">Create your own token or NFT on Ergo</p>
+    </div>
+</header>
+
+<main>
+    <section id="uploadCard" class="card" hidden>
+        <h2>Upload a file for your NFT</h2>
+        <p>Add your picture, sound or video here. You get a link to paste into SigmaMint in your Ergo wallet.</p>
+        <input id="file" type="file" aria-label="Picture, sound or video file"
+               accept="image/png,image/jpeg,image/gif,image/webp,audio/mpeg,audio/wav,audio/ogg,video/mp4,video/webm">
+        <p id="uploadMsg" class="hint" role="status"></p>
+        <div id="preview" hidden></div>
+        <div id="result" hidden>
+            <p class="hint">Your link</p>
+            <div class="copy">
+                <input id="link" type="text" readonly aria-label="IPFS link">
+                <button id="copyLink" type="button">Copy</button>
+            </div>
+            <p id="copyMsg" class="hint" role="status">Copy it, go back to SigmaMint in your Ergo wallet, and paste it into the file field.</p>
+        </div>
+        <p class="hint">Uploaded files are stored on IPFS: anyone can see them and they cannot be removed. Only upload what you have the right to share.</p>
+    </section>
+
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaMint is a Mosaik dApp: it runs inside the Ergo wallet app, where you fill in the details and sign.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Choose "Mint a token" or "Mint an NFT", fill in the form, preview, then mint.</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaMint dApp address">
+            <button id="copyApp" type="button">Copy</button>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Good to know</h2>
+        <ul class="plain">
+            <li><strong>Cost.</strong> Only the Ergo network fee (about 0.001 ERG). No service fee.</li>
+            <li><strong>Permanent.</strong> A mint cannot be undone or edited. Check the name and the numbers first.</li>
+            <li><strong>Names are not unique.</strong> Anyone can mint a token with any name; a name does not make a token official.</li>
+            <li><strong>Your keys stay yours.</strong> SigmaMint only prepares the transaction; your wallet shows it and signs it.</li>
+        </ul>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+/* SigmaMint additions on top of ../style.css */
+input[type="file"] {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+button:disabled { opacity: .55; cursor: default; }
+#preview { margin-top: 12px; text-align: center; }
+#preview img, #preview video { max-width: 100%; max-height: 260px; border-radius: 8px; }
+#preview audio { width: 100%; }
+#result { margin-top: 12px; }

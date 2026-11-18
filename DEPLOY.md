@@ -142,6 +142,55 @@ new packages, no SELinux or Apache changes. Status notes are written to `tx/` in
 cache directory. The optional keys (`ORDER_*`, `USE_MEMPOOL`, `EXPLORER_WEB_URL`) are described in
 `sigmaswap.env.example`.
 
+## SigmaMint (`sigmamint/`)
+
+Token and NFT minting, served from the same checkout at
+`https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/`. It shares the venv, the Python helper,
+`AppConfig.pm`, the env file and the cache directory, so there is **no new package, Apache or
+SELinux step**. `redeploy.sh` covers it.
+
+1. **API key (the app's only secret).** Add your Lighthouse key to the env file, then relabel it:
+
+   ```bash
+   sudoedit /data/AAP_Storage/secrets/sigmaswap.env        # LIGHTHOUSE_API_KEY=...
+   sudo restorecon -F /data/AAP_Storage/secrets/sigmaswap.env
+   ```
+
+   Without a key SigmaMint still works, but the upload page hides the upload and NFTs can only be
+   minted from an existing `ipfs://` link.
+
+2. **Outbound network** (the server relays uploads and reads files back to fingerprint them):
+
+   ```bash
+   curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://gateway.lighthouse.storage/ipfs/QmexivW9Nc3CgiTsRQkwDffUZiBRWdbaGqTSTw6ch6wfDF   # 200
+   curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://upload.lighthouse.storage/                                                     # any HTTP answer, not a timeout
+   ```
+
+3. **GATES**
+
+   ```bash
+   ls -Z sigmamint/api.pl                                    # httpd_sys_script_exec_t
+   curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl | head -c 80; echo      # {"manifest":{"appName":"SigmaMint",...
+   curl -sS -F action=config https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl; echo  # {"success":1,"uploads":1,"max_mb":10}
+   ```
+
+   `"uploads":0` means the key is missing/empty, `MINT_UPLOADS=0`, or the cache directory is not
+   writable. Then open the page in a browser, upload a small picture, and check that a link appears.
+
+Uploads are spooled to `tmp/` inside the cache directory while they are checked and relayed, then
+deleted; counters for the upload limits are in `mint-limits.json` there. Limits and the kill switch
+(`MINT_UPLOADS=0`) are in `sigmaswap.env.example`.
+
+```
+Upload says "Uploads are not available right now"
+  -> ssl_error_log: "Lighthouse upload refused: HTTP 401/403" = wrong or revoked API key.
+Upload says "Too many uploads right now"
+  -> a limit was hit (per visitor per hour, or per day). Raise it in the env file if intended.
+Upload fails with "Something went wrong" and nothing in the log about Lighthouse
+  -> the cache directory is not apache-writable (step 4 of the main install) or the helper timed out
+     on a slow link; large files need a few minutes.
+```
+
 ## Token logos
 
 The logos in `icons/` are ordinary files in the repository; a `git pull` brings new ones. To add

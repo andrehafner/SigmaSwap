@@ -11,6 +11,10 @@
   The server never holds keys or funds. It stores no accounts; the only thing it keeps is a
   short-lived note of each transaction it built, to report afterwards whether it went through.
 
+- **SigmaMint** (`sigmamint/`, same deployment): mints fungible tokens and NFTs (EIP-4) the same way,
+  as unsigned transactions signed in the user's wallet. Its browser page lets a visitor upload the
+  NFT's media, which the server checks and relays to Lighthouse (IPFS/Filecoin).
+
 ## 2. Roles & permissions
 
 - **Anonymous user** (the only role): view pairs, get a quote, request a swap / order / order-refund
@@ -29,6 +33,11 @@
 - **Transaction notes** — `CACHE_DIR/tx/<random id>.json`, one per transaction handed to a wallet:
   transaction id, the box it depends on, address, token ids, amounts, time. All of it becomes public
   on-chain once the transaction confirms. Classification: **low**. Deleted after two days.
+- **SigmaMint mint notes** — same `tx/` store: token name, description, amount, decimals, IPFS id and
+  file fingerprint, later the transaction and token id. All public on-chain after the mint. **Low**.
+- **SigmaMint uploads** — NOT stored here. A file is spooled to `CACHE_DIR/tmp/` while it is checked
+  and sent to Lighthouse, then deleted. `CACHE_DIR/mint-limits.json` holds upload counters and, for
+  the current day only, a salted hash of each uploader's IP address (no raw addresses). **Low**.
 - **Request data, otherwise not stored**: Ergo address, token ids, amounts. Ergo addresses are public
   pseudonymous identifiers. Classification: **low**. No FERPA data, no NetIDs, no names, no email.
 - **Logs** (`ssl_error_log`): transaction id + first 8 characters of the pool id per built swap,
@@ -80,6 +89,16 @@
 - **Approve**: not applicable.
 - **Landing page**: browser `POST api.pl` (FormData `action=pools`) → pair list.
 
+- **SigmaMint mint**: wallet `POST sigmamint/api.pl?action=preview` (name, description, amount and
+  decimals, or an IPFS link) → input checked, link fingerprinted through the configured gateway →
+  a mint note is stored under a random id → wallet `GET ...?action=ergopay&n=<id>&addr=` →
+  `sigmaswap.py mint` builds `[user boxes] → [box with the new token + EIP-4 registers, change,
+  miner fee]` → signed in the wallet → `action=status` reports it and shows the token id.
+- **SigmaMint upload**: browser `POST sigmamint/api.pl` (FormData `action=upload`, one file) →
+  size, rate limits → `sigmaswap.py upload` checks the file's signature bytes against an allowlist,
+  hashes it, sends it to Lighthouse with the API key → `{cid, sha256, media}` → the page shows the
+  `ipfs://` link for the user to paste into the wallet.
+
 ## 5. Authentication & authorization
 
 - **Authentication: none, by design.** The app is not behind Shibboleth
@@ -100,6 +119,9 @@
 - **ergo-lib-python 0.28.0** (sigma-rust) in `venv/`: transaction building and script evaluation.
 - **ErgoDex off-chain bots** (third party, not operated by us): execute orders placed in order
   mode and take the execution fee. We do not call them; they watch the chain.
+- **Lighthouse** (`upload.lighthouse.storage`, `gateway.lighthouse.storage`): SigmaMint stores
+  uploaded NFT media there with the operator's API key, and reads a file back by content id to
+  fingerprint it. Files on IPFS are public and effectively permanent.
 - No SMTP, no Oracle, no MariaDB. Outbound hosts are fixed in configuration, never taken from a
   request (no SSRF surface).
 
@@ -142,7 +164,17 @@
   note, stored under an unguessable random id supplied with the request; file names are validated
   (`^[0-9a-f]{32}$`), so nothing else can be written or read through it.
 - **Errors**: generic messages to the client, details only in the server log.
-- **Secrets**: none exist. The env file is still kept outside the web root, `640 root:apache`.
+- **Secrets**: one, `LIGHTHOUSE_API_KEY`, in the env file outside the web root (`640 root:apache`).
+  It is passed to the helper on stdin (never on a command line), sent only as the Authorization
+  header to the configured Lighthouse host, never returned to a client and never logged.
+- **Upload controls (SigmaMint)**: size limit (default 10 MB, enforced before and after receipt);
+  type allowlist by signature bytes, not by name or declared type (PNG, JPG, GIF, WEBP, MP3, WAV,
+  OGG, MP4, WEBM — no SVG or HTML); the client's file name is discarded; per-visitor hourly and
+  global daily limits; kill switch `MINT_UPLOADS=0`; nothing is kept on this server.
+- **No arbitrary fetches**: SigmaMint only ever fetches `<gateway>/<content id>` with a strictly
+  validated id, so it cannot be pointed at internal addresses.
+- **Token names**: names equal to a token in the swap list are refused, and the app states that a
+  name does not make a token official.
 - **Web exposure**: Apache serves only the web files; `.py`, `.pm`, `.sh`, `.md`, `venv/`,
   `deploy/`, `.git` are denied. App tree is root-owned and not writable by Apache.
 - **Transport**: HTTPS only (ErgoPay `ergopay://` URLs are fetched over HTTPS by the wallet).
@@ -159,6 +191,12 @@
 - **Public and unauthenticated on a Cornell host** — a deliberate exception to the Shibboleth
   baseline. There is no rate limiting in the app; each quote/swap request makes 1–4 outbound API
   calls and starts a Python process. Add Apache-level rate limiting if it is abused.
+- **SigmaMint: anonymous uploads go to the operator's Lighthouse account.** Anyone on the internet
+  can store a picture, sound or video (up to the limits) under that account, and it cannot be
+  removed from IPFS afterwards. Content is not reviewed or scanned. The limits and the kill switch
+  bound the volume, not the content. This is the main policy risk of the deployment.
+- **SigmaMint: anonymous token minting on a cornell.edu host.** Minting is permissionless on Ergo,
+  but tokens and NFTs minted here could be presented as associated with the host.
 - **Financial software**: users move their own funds. Bugs here could produce a bad trade; the
   on-chain pool contract and the wallet's confirmation screen are the final safeguards.
 - **Third-party dependencies**: quotes and transactions depend on the public Ergo explorer and

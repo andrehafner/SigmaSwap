@@ -12,11 +12,16 @@ package AppConfig;
 use strict;
 use warnings;
 use Exporter 'import';
-use FindBin;
+use File::Basename ();
+use Cwd ();
 use IPC::Open2;
 use JSON::PP ();
 
 our @EXPORT_OK = qw(cfg base_url chain);
+
+# Directory of this module = the SigmaSwap app root. Apps in subdirectories
+# (sigmamint/) share the helper script and the Python virtualenv found here.
+our $ROOT = File::Basename::dirname(Cwd::abs_path(__FILE__));
 
 my %ENVFILE;
 my $loaded = 0;
@@ -67,7 +72,7 @@ sub base_url {
 # on stdin and the response is CAPTURED from stdout (it can never leak into the
 # CGI response). The helper's stderr goes to the Apache error log.
 sub chain {
-    my ($cmd, $req) = @_;
+    my ($cmd, $req, $timeout_override) = @_;
     die "bad helper command\n" unless $cmd =~ /^[a-z]+$/;
     my %req = %{ $req || {} };
     $req{cfg} = {
@@ -78,10 +83,12 @@ sub chain {
         order_min_ex_fee => cfg('ORDER_MIN_EX_FEE', 6000000) + 0,
         order_miner_fee  => cfg('ORDER_MINER_FEE',  2000000) + 0,
         use_mempool      => (cfg('USE_MEMPOOL', 1) ? JSON::PP::true : JSON::PP::false),
+        lighthouse_upload_url => cfg('LIGHTHOUSE_UPLOAD_URL', 'https://upload.lighthouse.storage/api/v0/add'),
+        ipfs_gateway_url      => cfg('IPFS_GATEWAY_URL',      'https://gateway.lighthouse.storage/ipfs'),
     };
-    my $python = cfg('PYTHON', "$FindBin::Bin/venv/bin/python");
-    my $script = "$FindBin::Bin/sigmaswap.py";
-    my $timeout = cfg('HELPER_TIMEOUT', 40) + 0;
+    my $python = cfg('PYTHON', "$ROOT/venv/bin/python");
+    my $script = "$ROOT/sigmaswap.py";
+    my $timeout = $timeout_override || (cfg('HELPER_TIMEOUT', 40) + 0);
 
     my ($out, $pid) = ('', undef);
     my $ok = eval {

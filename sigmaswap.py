@@ -80,14 +80,22 @@ class SwapError(Exception):
 # ---------------------------------------------------------------- http ----
 
 def http_json(url, timeout=HTTP_TIMEOUT):
+    """GET a JSON document. None for 404. One retry on a network hiccup (never for the
+    short, optional mempool lookups, which pass their own small timeout)."""
     req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "sigmaswap/1"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
+    attempts = 2 if timeout >= HTTP_TIMEOUT else 1
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            if e.code < 500 or attempt == attempts - 1:
+                raise
+        except (urllib.error.URLError, OSError):       # timeouts, resets, DNS
+            if attempt == attempts - 1:
+                raise
 
 
 def explorer(cfg, path, timeout=HTTP_TIMEOUT):
@@ -416,7 +424,7 @@ def select_inputs(boxes, need_erg, need_token_id, need_token_amt):
         if erg >= need_erg(toks):
             return chosen, erg, toks
         if not remaining:
-            raise SwapError("Insufficient ERG on this address for the swap plus network fee.")
+            raise SwapError("Insufficient ERG on this address for this transaction plus the network fee.")
         if len(chosen) >= MAX_USER_INPUTS:
             raise SwapError("This address holds too many small boxes. Consolidate the wallet "
                             "(send your funds to yourself) and try again.")
@@ -480,7 +488,7 @@ def user_outputs(address, height, out_toks, out_erg, first_token=None):
     extra_value = change_box_min_value(MAX_TOKENS_PER_BOX)
     main_value = out_erg - extra_value * (len(chunks) - 1)
     if main_value < change_box_min_value(len(chunks[0])):
-        raise SwapError("Insufficient ERG on this address for the swap plus network fee.")
+        raise SwapError("Insufficient ERG on this address for this transaction plus the network fee.")
     outs = []
     for i, chunk in enumerate(chunks):
         outs.append(ErgoBoxCandidate(
@@ -869,6 +877,211 @@ def cmd_refund(req):
     }
 
 
+# ------------------------------------------------------------------ mint ----
+# SigmaMint (sigmamint/): mint a fungible token or an NFT following EIP-4.
+# A mint is an ordinary transaction from the user's own boxes; the new token's id
+# is, by protocol rule, the id of the transaction's first input.
+#   R4 name, R5 description, R6 decimals            (every token)
+#   R7 media type, R8 SHA-256 of the file, R9 link   (NFTs)
+
+NFT_TYPES = {"picture": bytes([1, 1]), "audio": bytes([1, 2]), "video": bytes([1, 3])}
+MAX_NAME_BYTES = 120
+MAX_DESC_BYTES = 600
+
+
+def clean_text(v, what, max_bytes, required):
+    if v is None:
+        v = ""
+    if not isinstance(v, str):
+        raise SwapError("Invalid %s." % what)
+    v = "".join(ch for ch in v if ch.isprintable() or ch == "\n").strip()
+    if required and not v:
+        raise SwapError("Please enter a %s." % what)
+    if len(v.encode("utf-8")) > max_bytes:
+        raise SwapError("The %s is too long." % what)
+    return v
+
+
+def req_cid(v):
+    """An IPFS content id (CIDv0 'Qm...' or CIDv1 base32 'b...'), nothing else."""
+    import re
+    if isinstance(v, str):
+        v = v.strip()
+        for prefix in ("ipfs://", "ipfs/"):
+            if v.startswith(prefix):
+                v = v[len(prefix):]
+        if re.match(r"^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{50,100})$", v):
+            return v
+    raise SwapError("That is not a valid IPFS link. It should look like ipfs://Qm... or ipfs://bafy...")
+
+
+def sniff_media(head):
+    """File type from its first bytes -> (nft type, extension) or None. Allowlist only."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "picture", "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "picture", "jpg"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "picture", "gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "picture", "webp"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "audio", "wav"
+    if head[:3] == b"ID3" or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "audio", "mp3"
+    if head[:4] == b"OggS":
+        return "audio", "ogg"
+    if head[4:8] == b"ftyp":
+        return "video", "mp4"
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "video", "webm"
+    return None
+
+
+def cmd_upload(req):
+    """Relay one uploaded file to Lighthouse (IPFS/Filecoin) and return its content id.
+
+    The file is read from the web server's temp file, checked, hashed and sent on.
+    Nothing is kept on this server. The API key arrives on stdin and is only ever
+    used as the Authorization header to the configured Lighthouse host.
+    """
+    import hashlib
+    import os
+    import uuid
+    cfg = req["cfg"]
+    key = req.get("key") or ""
+    path = req.get("path") or ""
+    max_bytes = int(req.get("max_bytes") or 0)
+    if not key or not path or max_bytes <= 0:
+        raise SwapError("Uploads are not available.")
+    size = os.path.getsize(path)
+    if size <= 0:
+        raise SwapError("The file is empty.")
+    if size > max_bytes:
+        raise SwapError("The file is too large (limit %d MB)." % (max_bytes // (1024 * 1024)))
+    with open(path, "rb") as f:
+        data = f.read(max_bytes + 1)
+    kind = sniff_media(data[:16])
+    if not kind:
+        raise SwapError("This file type is not supported. Use PNG, JPG, GIF, WEBP, MP3, WAV, OGG, MP4 or WEBM.")
+    media, ext = kind
+    digest = hashlib.sha256(data).hexdigest()
+
+    boundary = "----sigmamint" + uuid.uuid4().hex
+    filename = "sigmamint-%s.%s" % (digest[:16], ext)          # never the client's file name
+    body = (("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+             "Content-Type: application/octet-stream\r\n\r\n" % (boundary, filename)).encode("ascii")
+            + data + ("\r\n--%s--\r\n" % boundary).encode("ascii"))
+    request = urllib.request.Request(
+        cfg["lighthouse_upload_url"], data=body, method="POST",
+        headers={"Authorization": "Bearer " + key, "User-Agent": "sigmamint/1",
+                 "Content-Type": "multipart/form-data; boundary=" + boundary})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as r:
+            res = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        sys.stderr.write("sigmaswap.py: Lighthouse upload refused: HTTP %d\n" % e.code)   # never log the key
+        if e.code in (401, 403):
+            raise SwapError("Uploads are not available right now.")
+        raise SwapError("The storage service did not accept the file. Please try again.")
+    cid = req_cid(res.get("Hash") if isinstance(res, dict) else None)
+    return {"cid": cid, "sha256": digest, "size": size, "media": media, "ext": ext}
+
+
+def cmd_cidhash(req):
+    """Fingerprint a file that is already on IPFS (fetched only from the configured gateway)."""
+    import hashlib
+    cfg = req["cfg"]
+    cid = req_cid(req.get("cid"))
+    max_bytes = int(req.get("max_bytes") or 0) or 50 * 1024 * 1024
+    url = cfg["ipfs_gateway_url"].rstrip("/") + "/" + cid
+    request = urllib.request.Request(url, headers={"User-Agent": "sigmamint/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=40) as r:
+            data = r.read(max_bytes + 1)
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: could not fetch %s: %s\n" % (cid, str(e)[:120]))
+        raise SwapError("That IPFS link could not be loaded. Check it, or upload the file instead.")
+    if len(data) > max_bytes:
+        raise SwapError("The linked file is too large (limit %d MB)." % (max_bytes // (1024 * 1024)))
+    kind = sniff_media(data[:16])
+    if not kind:
+        raise SwapError("The linked file is not a supported picture, audio or video file.")
+    return {"cid": cid, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "media": kind[0], "ext": kind[1]}
+
+
+def cmd_mint(req):
+    from ergo_lib_python.chain import (Constant, ErgoBoxCandidate, NetworkPrefix, NonMandatoryRegisterId,
+                                       Token, TokenId)
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+    R = NonMandatoryRegisterId
+
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    kind = req.get("kind")
+    name = clean_text(req.get("name"), "name", MAX_NAME_BYTES, True).replace("\n", " ")
+    desc = clean_text(req.get("description"), "description", MAX_DESC_BYTES, False)
+
+    regs = {R.R4: Constant(name.encode("utf-8")), R.R5: Constant(desc.encode("utf-8"))}
+    extra_bytes = len(name.encode("utf-8")) + len(desc.encode("utf-8"))
+    if kind == "token":
+        amount = req_amount(req.get("amount"), "amount")
+        try:
+            decimals = int(req.get("decimals"))
+        except (TypeError, ValueError):
+            raise SwapError("Invalid decimals.")
+        if not (0 <= decimals <= 9):
+            raise SwapError("Decimals must be between 0 and 9.")
+        regs[R.R6] = Constant(str(decimals).encode("ascii"))
+    elif kind == "nft":
+        amount, decimals = 1, 0
+        media = req.get("media")
+        if media not in NFT_TYPES:
+            raise SwapError("Invalid media type.")
+        cid = req_cid(req.get("cid"))
+        sha = req.get("sha256")
+        if not is_hex64(sha):
+            raise SwapError("Invalid file fingerprint.")
+        link = "ipfs://" + cid
+        regs[R.R6] = Constant(b"0")
+        regs[R.R7] = Constant(NFT_TYPES[media])
+        regs[R.R8] = Constant(bytes.fromhex(sha))
+        regs[R.R9] = Constant(link.encode("ascii"))
+        extra_bytes += 2 + 32 + len(link)
+    else:
+        raise SwapError("Invalid request.")
+
+    # the box that carries the new token: sized generously for its registers
+    mint_value = max(1000000, (220 + extra_bytes) * MIN_BOX_VALUE_PER_BYTE)
+
+    def need_erg(toks):
+        return mint_value + fee + change_need(len(toks))
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, None, 0)
+
+    ctx, height = chain_context(cfg)
+    token_id = hexid(chosen[0].box_id)             # protocol rule: new token id = first input's box id
+    mint_out = ErgoBoxCandidate(value=mint_value, script=address.ergo_tree(), creation_height=height,
+                                tokens=[Token(TokenId(token_id), amount)], registers=regs)
+    change = user_outputs(address, height, dict(user_toks), user_erg - mint_value - fee)
+    unsigned = TxBuilder(BoxSelection(chosen, []), [mint_out] + change, height, fee, address).build()
+    if hexid(unsigned.inputs[0].box_id) != token_id:
+        raise SwapError("The mint could not be prepared. Please try again.")
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id), "address": addr_str, "mode": "mint",
+        "token_id": token_id, "watch_box": token_id, "kind": kind, "name": name,
+        "amount": str(amount), "decimals": decimals, "miner_fee": str(fee), "box_value": str(mint_value),
+    }
+
+
 # ---------------------------------------------------------------- status ----
 
 def _tx_or_none(cfg, tx_id):
@@ -943,7 +1156,8 @@ def cmd_health(req):
 
 
 COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balance": cmd_balance,
-            "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status}
+            "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status,
+            "mint": cmd_mint, "upload": cmd_upload, "cidhash": cmd_cidhash}
 
 
 def main():
