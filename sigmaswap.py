@@ -70,6 +70,7 @@ MAX_USER_INPUTS = 60
 MAX_USER_BOXES_SCANNED = 300
 MAX_PENDING_CHAIN = 30           # how many unconfirmed swaps on one pool we are willing to build on
 HTTP_TIMEOUT = 15
+MEMPOOL_TIMEOUT = 4              # mempool data is optional: never let it hold up a quote
 
 
 class SwapError(Exception):
@@ -78,10 +79,10 @@ class SwapError(Exception):
 
 # ---------------------------------------------------------------- http ----
 
-def http_json(url):
+def http_json(url, timeout=HTTP_TIMEOUT):
     req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "sigmaswap/1"})
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -89,8 +90,8 @@ def http_json(url):
         raise
 
 
-def explorer(cfg, path):
-    return http_json(cfg["explorer_url"].rstrip("/") + "/api/v1/" + path)
+def explorer(cfg, path, timeout=HTTP_TIMEOUT):
+    return http_json(cfg["explorer_url"].rstrip("/") + "/api/v1/" + path, timeout)
 
 
 # ------------------------------------------------------------ validation ----
@@ -238,7 +239,7 @@ def mempool_txs(cfg, address):
         return []
     try:
         page = explorer(cfg, "mempool/transactions/byAddress/%s?limit=100"
-                        % urllib.parse.quote(address, safe="")) or {}
+                        % urllib.parse.quote(address, safe=""), MEMPOOL_TIMEOUT) or {}
         return [t for t in (page.get("items") or []) if isinstance(t, dict)]
     except Exception as e:
         sys.stderr.write("sigmaswap.py: mempool lookup failed, using confirmed state: %s\n" % str(e)[:200])

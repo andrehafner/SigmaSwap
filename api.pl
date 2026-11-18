@@ -36,7 +36,7 @@ use Math::BigFloat;
 use File::Spec;
 use AppConfig qw(cfg base_url chain);
 
-use constant APP_VERSION => 3;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 4;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -57,6 +57,16 @@ $action = '' unless defined $action;
 # 'direct' or 'order': which of the two swap screens the user is on (carried in the action URLs)
 my $MODE = $cgi->url_param('mode');
 $MODE = 'direct' unless defined $MODE && $MODE eq 'order';
+
+# Simple mode: the same swap with only the essentials on screen. It is chosen with
+# the switch on the start screen (posted once as an input value) and from then on
+# travels in the action URLs, like the mode.
+my $SIMPLE = $cgi->url_param('simple');
+if (defined $SIMPLE) { $SIMPLE = $SIMPLE eq '1' ? 1 : 0 }
+else {
+    my $v = posted_values();
+    $SIMPLE = exists $v->{simple} ? ($v->{simple} ? 1 : 0) : (cfg('SIMPLE_DEFAULT', 0) ? 1 : 0);
+}
 
 my %actions = (
     ''        => \&act_app,
@@ -368,6 +378,14 @@ sub home_view {
         button('Place an order', 'goOrder', style => 'SECONDARY'),
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
+    push @kids, child(card(column([
+        child(O(type => 'CheckboxLabel', id => 'simple', text => 'Simple mode', style => 'BODY1BOLD',
+                value => ($SIMPLE ? TRUE : FALSE)), align => 'START'),
+        child(label('Shows only what you need: what you pay, what you receive, and the button. '
+                    . 'Switch it off to see rate, price impact, fees and slippage settings.',
+                    'BODY2', color => 'SECONDARY'), align => 'START'),
+    ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+
     push @kids, label('Your wallet signs every transaction; SigmaSwap never holds your funds.',
                       'BODY2', color => 'SECONDARY', talign => 'CENTER');
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
@@ -402,7 +420,7 @@ sub main_view {
         child(label('Your wallet address', 'BODY1BOLD'), align => 'START'),
         O(type => 'ErgoAddressChooseButton', id => 'address', value => $s->{address}, onValueChanged => 'refresh',
           style => $s->{address} ? 'BUTTON_SECONDARY' : undef),
-        child(label('Funds are taken from, and returned to, this address.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+        $SIMPLE ? () : child(label('Funds are taken from, and returned to, this address.', 'BODY2', color => 'SECONDARY'), align => 'START'),
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
     # ---- pay / receive (orders exist for ERG pairs only)
@@ -431,10 +449,13 @@ sub main_view {
     push @form,
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
         child(label('You receive', 'BODY1BOLD'), align => 'START'),
-        child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token'), align => 'JUSTIFY'),
+        child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token'), align => 'JUSTIFY');
+    # simple mode has no slippage control: the 1 % default applies
+    push @form,
         child(label($order ? 'Slippage tolerance (sets your minimum)' : 'Slippage tolerance', 'BODY1BOLD'), align => 'START'),
         child(O(type => 'DropDownList', id => 'slippage', value => "$s->{slippage}", onValueChanged => 'clearQuote',
-                entries => O(map { $_ => $slip{$_} } sort { $a <=> $b } keys %slip)), align => 'JUSTIFY');
+                entries => O(map { $_ => $slip{$_} } sort { $a <=> $b } keys %slip)), align => 'JUSTIFY')
+        unless $SIMPLE;
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
     # ---- quote / status area, open orders, footer
@@ -442,7 +463,7 @@ sub main_view {
     push @kids, child(orders_placeholder($s->{address}), align => 'JUSTIFY') if $order;
     push @kids, label('Network fee ' . fmt_amount(cfg('MINER_FEE', 1100000), 9) . ' ERG. No service fee. '
                       . 'Your wallet signs every transaction; SigmaSwap never holds your funds.',
-                      'BODY2', color => 'SECONDARY', talign => 'CENTER');
+                      'BODY2', color => 'SECONDARY', talign => 'CENTER') unless $SIMPLE;
 
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
@@ -450,11 +471,12 @@ sub main_view {
 # Every response re-declares the actions with the current mode in their URLs: the
 # mode is not an input field, it travels with the buttons.
 sub base_actions {
-    my $m = "&mode=$MODE";
+    my $m = "&mode=$MODE&simple=$SIMPLE";
     return (
-        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=direct", id => 'goDirect', postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=order",  id => 'goOrder',  postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=home",                id => 'home',     postValues => 'NONE'),
+        # from the start screen: no simple= in the URL, the switch itself is posted
+        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=direct", id => 'goDirect', postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=order",  id => 'goOrder',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=home&simple=$SIMPLE", id => 'home',     postValues => 'NONE'),
         O(type => 'BackendRequestAction', url => "$API?action=refresh$m", id => 'refresh', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=flip$m",    id => 'flip',    postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=quote$m",   id => 'preview', postValues => 'VALID'),
@@ -583,7 +605,7 @@ sub act_status {
     my $nonce = $cgi->url_param('n');
     return mosaik_dialog('Unknown swap.') unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/;
     my $reg    = registry();
-    my $self   = O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&n=$nonce", id => 'status', postValues => 'NONE');
+    my $self   = O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&simple=$SIMPLE&n=$nonce", id => 'status', postValues => 'NONE');
     my $again  = button('Refresh status', 'status', style => 'SECONDARY');
     my $new    = button('Back to the form', 'clearQuote', style => 'TEXT');
     my $what   = $MODE eq 'order' ? 'order' : 'swap';
@@ -707,6 +729,24 @@ sub act_quote {
     my @rows = (
         kv_row('You pay', $pay),
         kv_row($order ? 'You receive (estimate)' : 'You receive', $get_el),
+    );
+    if ($SIMPLE) {
+        # the essentials only; an order still shows the two things that differ from the estimate
+        push @rows, kv_row('At least', fmt_amount($show_min, $to->{decimals}) . " $to->{ticker}"),
+                    kv_row('Bot fee', "\x{2248} " . fmt_amount($ex_fee->bstr, 9, 4) . ' ERG') if $order;
+    }
+    else {
+        push @rows, detail_rows($q, $s, $from, $to, $rate, $bps, $fee, $order, $ex_fee, $show_min);
+    }
+    push @rows, child(label("Warning: this swap moves the pool price by " . fmt_pct($bps)
+                            . ". You will receive noticeably less than the market rate.", 'BODY2BOLD', color => 'PRIMARY'),
+                      align => 'START') if $bps >= 500;
+    return finish_quote($q, $s, $from, $to, $pool, $min_out, $fee, $order, \@rows);
+}
+
+sub detail_rows {
+    my ($q, $s, $from, $to, $rate, $bps, $fee, $order, $ex_fee, $show_min) = @_;
+    my @rows = (
         O(type => 'HorizontalRule', vPadding => 'HALF_DEFAULT'),
         kv_row('Rate', "1 $from->{ticker} \x{2248} $rate $to->{ticker}"),
         kv_row('Price impact', fmt_pct($bps)),
@@ -726,10 +766,12 @@ sub act_quote {
     push @rows, child(label('Priced on top of ' . ($q->{pending} == 1 ? '1 swap' : "$q->{pending} swaps")
                             . ' already waiting in this pool.', 'BODY2', color => 'SECONDARY'), align => 'START')
         if !$order && ($q->{pending} || 0) > 0;
-    push @rows, child(label("Warning: this swap moves the pool price by " . fmt_pct($bps)
-                            . ". You will receive noticeably less than the market rate.", 'BODY2BOLD', color => 'PRIMARY'),
-                      align => 'START') if $bps >= 500;
+    return @rows;
+}
 
+sub finish_quote {    # balance check, Swap / Place order button, and the response
+    my ($q, $s, $from, $to, $pool, $min_out, $fee, $order, $rows) = @_;
+    my @rows = @$rows;
     my @extra;
     my $short = 0;
     if (defined $q->{balance}) {
@@ -759,7 +801,7 @@ sub act_quote {
         my $nonce = new_nonce();
         if (defined $nonce && record_file($nonce)) {
             $url .= "&n=$nonce";
-            push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&n=$nonce",
+            push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&simple=$SIMPLE&n=$nonce",
                            id => 'status', postValues => 'NONE');
         }
         push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay',

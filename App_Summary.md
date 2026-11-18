@@ -39,6 +39,9 @@
 
 - **Open app**: wallet `GET api.pl` → start screen with two choices, each explained: *Direct swap*
   and *Order* (with a front-running warning). The choice travels as `&mode=` in the action URLs.
+- **Simple mode**: a switch on the start screen. The same swaps with fewer details on screen
+  (no rate, price impact, fee breakdown or slippage control; slippage is fixed at 1 %). The
+  high-price-impact and front-running warnings are shown in both modes.
 - **Form**: `registry()` reads the cached pool list (or `sigmaswap.py pools` → ErgoDex analytics
   API) → Mosaik view JSON for that mode (order mode lists ERG pairs only).
 - **Change address / token / direction**: wallet `POST api.pl?action=refresh|flip` with the current
