@@ -116,8 +116,9 @@
   stored against the session. Back in the wallet, Preview picks them up. Without a valid session
   id the page offers no upload and the endpoint refuses.
 
-- **Limit order**: the order form's optional "receive at least" sets the order's minimum. Above
-  today's price the order waits. Before it is created the order contract is checked against the
+- **Limit order**: its own screen from the start page. It shows the pool's current price and a
+  price field that starts there; amount x price becomes the order's minimum. Above today's price
+  the order waits; at or below it, it fills right away. Before it is created the order contract is checked against the
   pool as it will look at the limit price, with both a standard fill and the bot's fill.
 - **Bot fill**: `sigmaswap.py bot` reads `orders/`, re-reads each order box and its pool from the
   chain, and when the pool pays at least the order's minimum builds `[pool, order] → [pool, all of

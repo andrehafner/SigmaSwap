@@ -37,7 +37,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 6;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 7;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -57,7 +57,11 @@ $action = '' unless defined $action;
 
 # 'direct' or 'order': which of the two swap screens the user is on (carried in the action URLs)
 my $MODE = $cgi->url_param('mode');
+# A limit order is an order with a price of the user's choosing: same machinery, its own screen.
+my $LIMIT = (defined $MODE && $MODE eq 'limit') ? 1 : 0;
+$MODE = 'order' if $LIMIT;
 $MODE = 'direct' unless defined $MODE && $MODE eq 'order';
+my $MODE_Q = $LIMIT ? 'limit' : $MODE;    # how the current screen is named in action URLs
 
 # Simple mode: the same swap with only the essentials on screen. It is chosen with
 # the switch on the start screen (posted once as an input value) and from then on
@@ -161,9 +165,9 @@ sub clean_state {
     my %slip = SLIPPAGE;
     my $sl   = $v->{slippage};
     $s{slippage} = (defined $sl && !ref $sl && exists $slip{$sl}) ? $sl : 100;
-    if ($MODE eq 'order' && defined $s{to}) {    # optional limit: "receive at least", in the receive token's units
-        my $l = $v->{ 'limit_' . $reg->{tokens}{ $s{to} }{decimals} };
-        $s{limit} = "$l" if defined $l && !ref $l && "$l" =~ /^[1-9]\d{0,18}\z/;
+    if ($LIMIT) {    # the user's price: receive-token per 1 pay-token, with 9 decimals
+        my $p = $v->{price_9};
+        $s{price} = "$p" if defined $p && !ref $p && "$p" =~ /^[1-9]\d{0,18}\z/;
     }
     if ($MODE eq 'order') {    # orders exist for ERG pairs only
         my $erg = ERG;
@@ -238,6 +242,16 @@ sub home_view {
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
     push @kids, child(card(column([
+        child(label('Limit order', 'HEADLINE2'), align => 'START'),
+        child(label('Name your own price. You see the current price and set yours above or below it. The order '
+                    . 'waits until the pool reaches your price, then SigmaSwap completes it. Pairs with ERG only.',
+                    'BODY1'), align => 'START'),
+        child(label('It may never fill if the price does not get there. You can cancel it any time. Like any '
+                    . 'waiting order it is public and can be front-run.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+        button('Limit order', 'goLimit', style => 'SECONDARY'),
+    ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+
+    push @kids, child(card(column([
         child(O(type => 'CheckboxLabel', id => 'simple', text => 'Simple mode', style => 'BODY1BOLD',
                 value => ($SIMPLE ? TRUE : FALSE)), align => 'START'),
         child(label('Shows only what you need: what you pay, what you receive, and the button. '
@@ -265,7 +279,7 @@ sub main_view {
         return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
     }
     push @kids, child(row([
-        child(label($order ? 'Order' : 'Direct swap', 'HEADLINE2'), weight => N(1)),
+        child(label($LIMIT ? 'Limit order' : $order ? 'Order' : 'Direct swap', 'HEADLINE2'), weight => N(1)),
         button('Change', 'home', style => 'TEXT'),
     ]), align => 'JUSTIFY');
     push @kids, child(row([
@@ -309,23 +323,27 @@ sub main_view {
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
         child(label('You receive', 'BODY1BOLD'), align => 'START'),
         child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token'), align => 'JUSTIFY');
-    if ($order && !$SIMPLE && defined $s->{to}) {
+    if ($LIMIT && $from && defined $s->{to}) {
         my $to = $tok->{ $s->{to} };
+        push @form, child(label('Your price', 'BODY1BOLD'), align => 'START');
+        push @form, child(label("Current price: 1 $from->{ticker} \x{2248} " . fmt_amount($s->{spot}, 9) . " $to->{ticker}",
+                                'BODY1', color => 'PRIMARY'), align => 'START') if defined $s->{spot};
         push @form,
-            child(label('Limit (optional)', 'BODY1BOLD'), align => 'START'),
-            child(O(type => 'DecimalInputField', id => "limit_$to->{decimals}",
-                    value => defined $s->{limit} ? N($s->{limit}) : undef,
-                    placeholder => "Receive at least, in $to->{ticker}",
-                    onValueChanged => 'clearQuote', minValue => N(0), scale => N($to->{decimals})), align => 'JUSTIFY'),
-            child(label('Leave empty to swap at the current price. With a limit, the order waits until the pool '
-                        . 'can pay that much.', 'BODY2', color => 'SECONDARY'), align => 'START');
+            child(O(type => 'DecimalInputField', id => 'price_9', value => defined $s->{price} ? N($s->{price}) : undef,
+                    placeholder => "$to->{ticker} for 1 $from->{ticker}",
+                    onValueChanged => 'clearQuote', onImeAction => 'preview', imeActionType => 'DONE',
+                    minValue => N(1), scale => N(9)), align => 'JUSTIFY'),
+            child(label("How much $to->{ticker} you want for each $from->{ticker}. It starts at the current price: raise it "
+                        . 'and the order waits for a better price; lower it and it fills right away.',
+                        'BODY2', color => 'SECONDARY'), align => 'START'),
+            button('Use current price', 'resetPrice', style => 'TEXT');
     }
     # simple mode has no slippage control: the 1 % default applies
     push @form,
         child(label($order ? 'Slippage tolerance (sets your minimum)' : 'Slippage tolerance', 'BODY1BOLD'), align => 'START'),
         child(O(type => 'DropDownList', id => 'slippage', value => "$s->{slippage}", onValueChanged => 'clearQuote',
                 entries => O(map { $_ => $slip{$_} } sort { $a <=> $b } keys %slip)), align => 'JUSTIFY')
-        unless $SIMPLE;
+        unless $SIMPLE || $LIMIT;    # a limit order's minimum is its price
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
     # ---- quote / status area, open orders, footer
@@ -341,11 +359,13 @@ sub main_view {
 # Every response re-declares the actions with the current mode in their URLs: the
 # mode is not an input field, it travels with the buttons.
 sub base_actions {
-    my $m = "&mode=$MODE&simple=$SIMPLE";
+    my $m = "&mode=$MODE_Q&simple=$SIMPLE";
     return (
         # from the start screen: no simple= in the URL, the switch itself is posted
         O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=direct", id => 'goDirect', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=order",  id => 'goOrder',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=limit",  id => 'goLimit',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh$m&reset=1",   id => 'resetPrice', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=home&simple=$SIMPLE", id => 'home',     postValues => 'NONE'),
         O(type => 'BackendRequestAction', url => "$API?action=refresh$m", id => 'refresh', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=flip$m",    id => 'flip',    postValues => 'VALID'),
@@ -397,9 +417,26 @@ sub lookup_balance {
     return $r->{ok} ? $r->{balance} : undef;
 }
 
+# Limit screen: read the pool's current price for the chosen pair (receive-token per
+# 1 pay-token, 9 decimals, pool fee included) and start the price field from it.
+sub fill_price {
+    my ($reg, $s, $force) = @_;
+    return unless $LIMIT && defined $s->{from} && defined $s->{to};
+    my $pool = $reg->{pair}{ $s->{from} }{ $s->{to} } or return;
+    my $q = chain('quote', { pool => $pool->{id}, from => $s->{from}, amount => $s->{amount} // '1' });
+    return unless $q->{ok} && ($q->{reserve_in} // '') =~ /^[1-9]\d*\z/ && ($q->{reserve_out} // '') =~ /^\d+\z/;
+    my ($df, $dt) = ($reg->{tokens}{ $s->{from} }{decimals}, $reg->{tokens}{ $s->{to} }{decimals});
+    my $spot = Math::BigInt->new($q->{reserve_out})->bmul($q->{fee_num})->bmul(Math::BigInt->new(10)->bpow($df + 9));
+    $spot = $spot->bdiv(Math::BigInt->new($q->{reserve_in})->bmul($q->{fee_denom})->bmul(Math::BigInt->new(10)->bpow($dt)));
+    return if $spot->is_zero || length($spot->bstr) > 18;
+    $s->{spot}  = $spot->bstr;
+    $s->{price} = $spot->bstr if $force || !defined $s->{price};
+}
+
 sub act_refresh {
     my $reg = registry();
     my $s   = clean_state(posted_values(), $reg);
+    fill_price($reg, $s, ($cgi->url_param('reset') // '') eq '1');
     mosaik_replace(main_view($reg, $s, lookup_balance($s)));
 }
 
@@ -410,6 +447,7 @@ sub act_flip {
         @$s{qw(from to)} = @$s{qw(to from)};
         delete $s->{amount};    # the amount was in units of the other token
     }
+    fill_price($reg, $s, 1);    # the price is the other way round now
     mosaik_replace(main_view($reg, $s, lookup_balance($s)));
 }
 
@@ -432,7 +470,7 @@ sub act_status {
     my $nonce = $cgi->url_param('n');
     return mosaik_dialog('Unknown swap.') unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/;
     my $reg    = registry();
-    my $self   = O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&simple=$SIMPLE&n=$nonce", id => 'status', postValues => 'NONE');
+    my $self   = O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE_Q&simple=$SIMPLE&n=$nonce", id => 'status', postValues => 'NONE');
     my $again  = button('Refresh status', 'status', style => 'SECONDARY');
     my $new    = button('Back to the form', 'clearQuote', style => 'TEXT');
     my $what   = $MODE eq 'order' ? 'order' : 'swap';
@@ -512,6 +550,15 @@ sub act_quote {
 
     my $pool = $reg->{pair}{ $s->{from} }{ $s->{to} };
     my ($from, $to) = @{ $reg->{tokens} }{ $s->{from}, $s->{to} };
+    if ($LIMIT) {    # the price becomes the order's minimum: amount x price, in the receive token's units
+        return mosaik_dialog('Enter your price.') unless defined $s->{price};
+        my $total = Math::BigInt->new($s->{amount})->bmul($s->{price})->bmul(Math::BigInt->new(10)->bpow($to->{decimals}));
+        $total = $total->bdiv(Math::BigInt->new(10)->bpow($from->{decimals} + 9));
+        return mosaik_dialog('At that price this amount buys less than the smallest unit. Raise the amount or the price.')
+            if $total->is_zero;
+        return mosaik_dialog('That price is too high for this amount.') if length($total->bstr) > 18;
+        $s->{limit} = $total->bstr;
+    }
     my $q = chain('quote', { pool => $pool->{id}, from => $s->{from}, amount => $s->{amount}, address => $s->{address} });
     return mosaik_dialog($q->{error} || 'Could not get a quote. Please try again.') unless $q->{ok};
     return mosaik_dialog('This pool no longer matches the selected pair. Please reopen the app.')
@@ -583,6 +630,7 @@ sub act_quote {
             $rows[0],
             kv_row('You pay', $pay),
             kv_row('You receive at least', fmt_amount($limit->bstr, $to->{decimals}) . " $to->{ticker}", style => 'HEADLINE2', color => 'PRIMARY'),
+            (defined $s->{price} ? kv_row('Your price', "1 $from->{ticker} = " . fmt_amount($s->{price}, 9) . " $to->{ticker}") : ()),
             kv_row("Today's price would give", fmt_amount($q->{out}, $to->{decimals}) . " $to->{ticker}"),
             child(label('This is a limit order. It waits until the pool can pay your limit; SigmaSwap checks every '
                         . 'minute and completes it then. It may never fill if the price does not get there. You can '
@@ -591,6 +639,9 @@ sub act_quote {
                         'BODY2', color => 'SECONDARY'), align => 'START'),
         );
     }
+    push @rows, child(label('Your price is at or below the current price, so this fills right away, at the current '
+                            . 'price and never below yours.', 'BODY2', color => 'SECONDARY'), align => 'START')
+        if $LIMIT && !$waits;
     return finish_quote($q, $s, $from, $to, $pool, $min_out, $fee, $order, \@rows, $limit ? 1 : 0);
 }
 
@@ -660,7 +711,7 @@ sub finish_quote {    # balance check, Swap / Place order button, and the respon
         if (defined $nonce && record_file($nonce)) {
             $url .= "&n=$nonce";
             watch_add('swap', $nonce);    # so the wallet's notification check can report the outcome
-            push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE&simple=$SIMPLE&n=$nonce",
+            push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE_Q&simple=$SIMPLE&n=$nonce",
                            id => 'status', postValues => 'NONE');
         }
         push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay',
