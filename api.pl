@@ -37,7 +37,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 7;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 8;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -803,40 +803,36 @@ sub act_ergopay {
     return ergopay_error('The swap could not be prepared. Please try again.') unless $from && $to;
     warn "sigmaswap: built " . ($order ? 'order' : 'swap') . " tx $r->{tx_id} pool " . substr($p{p}, 0, 8) . "\n";    # audit trail, public data only
     save_record($p{n}, {
-        t => time, mode => ($order ? 'order' : 'direct'), tx_id => $r->{tx_id}, watch_box => $r->{watch_box},
+        app => 'swap', t => time, mode => ($order ? 'order' : 'direct'), tx_id => $r->{tx_id}, watch_box => $r->{watch_box},
         order_box => $r->{order_box}, address => $r->{address}, from => $r->{from}, to => $r->{to},
         amount => $r->{amount}, out => $r->{out}, min_out => $r->{min_out}, limit => ($r->{limit} ? 1 : 0),
-    }) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/;
+    }) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/ && note_is_ours($p{n}, 'swap');
     order_register($r->{order_box}, $r->{address}) if $order;    # the completing bot watches it from now on
-    if ($order && $r->{limit}) {
-        return out_json(O(
-            reducedTx       => $r->{reduced_tx},
-            address         => $r->{address},
-            message         => 'SigmaSwap limit order: sell ' . fmt_amount($r->{amount}, $from->{decimals}) . " $from->{ticker} for at least "
-                               . fmt_amount($r->{min_out}, $to->{decimals}) . " $to->{ticker}. It waits until the price is reached; "
-                               . 'you can cancel it in SigmaSwap at any time. Network fee ' . fmt_amount($r->{miner_fee}, 9) . ' ERG.',
-            messageSeverity => 'INFORMATION',
-        ));
-    }
+    # The signing message is the last thing the user reads, and it may be reached through a
+    # link they did not build themselves. So: token names in their unambiguous form (the id
+    # is added when two listed tokens share a name), the minimum always stated, and a loud
+    # warning when the trade moves the price a lot.
+    my $pays = fmt_amount($r->{amount}, $from->{decimals}) . " $from->{label}";
+    my $gets = fmt_amount($r->{out}, $to->{decimals}) . " $to->{label}";
+    my $net  = 'Network fee ' . fmt_amount($r->{miner_fee}, 9) . ' ERG.';
+    my ($msg, $severity);
     if ($order) {
-        return out_json(O(
-            reducedTx       => $r->{reduced_tx},
-            address         => $r->{address},
-            message         => 'SigmaSwap order: sell ' . fmt_amount($r->{amount}, $from->{decimals}) . " $from->{ticker} for about "
-                               . fmt_amount($r->{out}, $to->{decimals}) . " $to->{ticker}. A bot completes it; execution fee up to "
-                               . fmt_amount($r->{max_ex_fee}, 9) . ' ERG, network fee ' . fmt_amount($r->{miner_fee}, 9)
-                               . ' ERG. You can cancel the order in SigmaSwap until it is executed.',
-            messageSeverity => 'INFORMATION',
-        ));
+        my $least = fmt_amount($r->{min_out}, $to->{decimals}) . " $to->{label}";
+        $msg = $r->{limit}
+            ? "SigmaSwap limit order: sell $pays for at least $least. It waits until the price is reached; "
+              . "you can cancel it in SigmaSwap at any time. $net"
+            : "SigmaSwap order: sell $pays for about $gets, and never less than $least. A bot completes it; execution fee up to "
+              . fmt_amount($r->{max_ex_fee}, 9) . " ERG. $net You can cancel the order in SigmaSwap until it is executed.";
+        $severity = 'INFORMATION';
     }
-    out_json(O(
-        reducedTx       => $r->{reduced_tx},
-        address         => $r->{address},
-        message         => 'SigmaSwap: swap ' . fmt_amount($r->{amount}, $from->{decimals}) . " $from->{ticker} for "
-                           . fmt_amount($r->{out}, $to->{decimals}) . " $to->{ticker}. Network fee "
-                           . fmt_amount($r->{miner_fee}, 9) . ' ERG.',
-        messageSeverity => 'INFORMATION',
-    ));
+    else {
+        my $impact = ($r->{impact_bps} // 0) + 0;
+        $msg = "SigmaSwap: swap $pays for $gets. $net";
+        $msg .= ' WARNING: this trade moves the pool price by ' . fmt_pct($impact) . ', so you receive much less than the market rate.'
+            if $impact >= 500;
+        $severity = $impact >= 500 ? 'WARNING' : 'INFORMATION';
+    }
+    out_json(O(reducedTx => $r->{reduced_tx}, address => $r->{address}, message => $msg, messageSeverity => $severity));
 }
 
 sub ergopay_refund {

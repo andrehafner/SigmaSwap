@@ -12,7 +12,8 @@ async function apiCall(action, params = {}) {
     Object.entries(params).forEach(([k, v]) => {
         if (v !== undefined && v !== null) formData.append(k, v);
     });
-    const response = await fetch('api.pl', { method: 'POST', body: formData });
+    // the upload is named in the URL too: the server accepts a large body only there
+    const response = await fetch(action === 'upload' ? 'api.pl?action=upload' : 'api.pl', { method: 'POST', body: formData });
     const data = await response.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
     return data;

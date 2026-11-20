@@ -25,7 +25,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 1;
+use constant APP_VERSION => 2;
 use constant ERG         => '0' x 64;
 use constant TOLERANCE   => 100;     # basis points the pool may move between preview and signing
 
@@ -77,9 +77,11 @@ sub tinfo {
     my $t = $reg->{tokens}{$id};
     return { ticker => $t->{label}, decimals => $t->{decimals} } if $t;
     return { ticker => 'ERG', decimals => 9 } if $id eq ERG;
+    # not in the swap list: the name is whatever its creator chose, so the id always goes with it
+    my $short = substr($id, 0, 6) . "\x{2026}";
     return (ref $fallback eq 'HASH' && defined $fallback->{ticker})
-        ? { ticker => "$fallback->{ticker}", decimals => ($fallback->{decimals} || 0) + 0 }
-        : { ticker => substr($id, 0, 6) . "\x{2026}", decimals => 0 };
+        ? { ticker => "$fallback->{ticker} ($short, unlisted)", decimals => ($fallback->{decimals} || 0) + 0 }
+        : { ticker => "token $short (unlisted)", decimals => 0 };
 }
 sub amt { my ($raw, $t) = @_; return fmt_amount($raw, $t->{decimals}) . " $t->{ticker}" }
 
@@ -408,16 +410,23 @@ sub act_ergopay {
         unless defined $p{op} && $p{op} =~ /^(add|remove)\z/ && defined $p{p} && $p{p} =~ /^[0-9a-f]{64}\z/
             && good_address($p{addr}) && !grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a q1 q2);
     my %limits = $p{op} eq 'add' ? (max_y => $p{q1}, min_lp => $p{q2}) : (min_x => $p{q1}, min_y => $p{q2});
+    # Adding liquidity puts the user's funds INTO a pool, so only pools from the published list:
+    # a link must never steer deposits into a look-alike pool somebody set up. Withdrawing only
+    # returns the user's own share to them, so that stays possible for any pool.
+    if ($p{op} eq 'add') {
+        my ($listed) = grep { $_->[0] eq $p{p} } @{ pool_list(registry()) };
+        return ergopay_error('This pool is not available for adding liquidity.') unless $listed;
+    }
     my $r = chain('lpbuild', { action => $p{op}, pool => $p{p}, amount => $p{a}, address => $p{addr}, %limits });
     return ergopay_error($r->{error} || 'This could not be prepared. Please try again.') unless $r->{ok};
 
     my $reg = registry();
     my $x = tinfo($reg, $r->{x}, $r->{x_info});
     my $y = tinfo($reg, $r->{y}, $r->{y_info});
-    my %rec = (t => time, mode => 'lp', action => $p{op}, tx_id => $r->{tx_id}, watch_box => $r->{watch_box}, address => $r->{address},
+    my %rec = (app => 'lp', t => time, mode => 'lp', action => $p{op}, tx_id => $r->{tx_id}, watch_box => $r->{watch_box}, address => $r->{address},
                x_amount => $r->{x_amount}, y_amount => $r->{y_amount}, x_ticker => $x->{ticker}, y_ticker => $y->{ticker},
                x_dec => $x->{decimals}, y_dec => $y->{decimals});
-    save_record($p{n}, \%rec) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/;
+    save_record($p{n}, \%rec) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/ && note_is_ours($p{n}, 'lp');
     warn "sigmalp: built $p{op} tx $r->{tx_id} pool " . substr($p{p}, 0, 8) . "\n";    # audit trail, public data only
     out_json(O(
         reducedTx       => $r->{reduced_tx},

@@ -569,6 +569,7 @@ def cmd_build(req):
         "address": addr_str, "mode": "direct",
         "pool": pool.nft, "from": from_id, "to": to_id,
         "amount": str(amount), "out": str(out), "miner_fee": str(fee),
+        "impact_bps": impact_bps(amount, out, r_in, r_out, pool.fee_num),
         "inputs": len(inputs), "height": height,
         "watch_box": hexid(pool.box.box_id), "pending": pool.pending,
     }
@@ -597,6 +598,7 @@ SELL_IDX = {"pk": 0, "base": (2, 17), "pool": 8, "quote": 9, "min_out": 10,
 BUY_IDX = {"pk": 0, "fee_den": 5, "fee_den_minus_num": 6, "pool": 9, "min_out": 10,
            "pool_fee": (11, 15), "max_miner_fee": 19}
 
+MAX_ORDER_SLIPPAGE_BPS = 1000    # widest gap between an order's minimum and today's price (the UI's largest setting)
 ORDER_BOX_RESERVE = 60000        # nanoERG kept in the order box on top of the execution fee
 MAX_ORDERS_SCANNED = 400
 
@@ -732,6 +734,12 @@ def build_order(req):
     op = order_params(cfg)
 
     pool = load_pool(cfg, pool_id)
+    # An order can be filled by anyone at any price down to its minimum, so the minimum
+    # is the user's protection. It arrives in the signing link: never accept one far
+    # below today's price, whatever the link says.
+    if min_out < pool.quote(from_id, amount)[1] * (10000 - MAX_ORDER_SLIPPAGE_BPS) // 10000:
+        raise SwapError("That minimum is too far below the current price (more than %d %%). "
+                        "Preview the order again in SigmaSwap." % (MAX_ORDER_SLIPPAGE_BPS // 100))
     terms = order_terms(pool, from_id, amount, min_out, op)
     sell_token = None if from_id == ERG_ID else from_id
 
@@ -1574,23 +1582,35 @@ def cmd_bot(req):
     now = time.time()
     pools, context = {}, None
     checked = filled = 0
+    # Registering an order is cheap and can be done by anyone, so the registry is
+    # treated as a hint only: the open order boxes are read from the chain in a few
+    # calls, and only registered ids that really exist there are looked at.
+    on_chain = {}
+    for template_hash in (ORDER_SELL_TEMPLATE_HASH, ORDER_BUY_TEMPLATE_HASH):
+        offset = 0
+        while offset < 2000:
+            page = explorer(cfg, "boxes/unspent/byErgoTreeTemplateHash/%s?limit=100&offset=%d"
+                            % (template_hash, offset)) or {}
+            items = page.get("items") or []
+            for item in items:
+                on_chain[item.get("boxId")] = item
+            offset += 100
+            if len(items) < 100:
+                break
     for name in sorted(os.listdir(directory)):
         if not (name.endswith(".json") and is_hex64(name[:-5])):
             continue
         path = os.path.join(directory, name)
         box_id = name[:-5]
         try:
+            b = on_chain.get(box_id)
+            if b is None:                       # not signed yet, already filled, or cancelled
+                if now - os.path.getmtime(path) > 3 * 3600:
+                    os.remove(path)
+                continue
             with open(path) as f:
                 rec = json.load(f)
             if now - float(rec.get("submitted", 0)) < 300:        # a fill is on its way: give it time
-                continue
-            b = explorer(cfg, "boxes/" + box_id)
-            if b is None:                                          # never signed, or not confirmed yet
-                if now - float(rec.get("t", now)) > 86400:
-                    os.remove(path)
-                continue
-            if b.get("spentTransactionId"):                        # filled or cancelled: nothing left to do
-                os.remove(path)
                 continue
             order = parse_order(b)
             if not order:
@@ -1674,7 +1694,10 @@ def clean_text(v, what, max_bytes, required):
         v = ""
     if not isinstance(v, str):
         raise SwapError("Invalid %s." % what)
-    v = "".join(ch for ch in v if ch.isprintable() or ch == "\n").strip()
+    # one normal form, no invisible characters: "Sig<zero-width space>USD" must not pass as "SigUSD"
+    import unicodedata
+    v = unicodedata.normalize("NFKC", v)
+    v = "".join(ch for ch in v if (ch.isprintable() or ch == "\n") and unicodedata.category(ch) != "Cf").strip()
     if required and not v:
         raise SwapError("Please enter a %s." % what)
     if len(v.encode("utf-8")) > max_bytes:
@@ -1695,27 +1718,84 @@ def req_cid(v):
     raise SwapError("That is not a valid IPFS link. It should look like ipfs://Qm... or ipfs://bafy...")
 
 
-def sniff_media(head):
-    """File type from its first bytes -> (nft type, extension) or None. Allowlist only."""
-    if head.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "picture", "png"
-    if head.startswith(b"\xff\xd8\xff"):
-        return "picture", "jpg"
-    if head[:6] in (b"GIF87a", b"GIF89a"):
-        return "picture", "gif"
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return "picture", "webp"
-    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
-        return "audio", "wav"
-    if head[:3] == b"ID3" or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
-        return "audio", "mp3"
-    if head[:4] == b"OggS":
-        return "audio", "ogg"
-    if head[4:8] == b"ftyp":
-        return "video", "mp4"
-    if head[:4] == b"\x1a\x45\xdf\xa3":
-        return "video", "webm"
-    return None
+def sniff_media(data):
+    """File type from the file's STRUCTURE -> (nft type, extension) or None. Allowlist only.
+
+    A few magic bytes are easy to put in front of anything, so each format's
+    container is walked: the file has to hold together as what it claims to be.
+    """
+    import struct
+    import zlib
+    n = len(data)
+    try:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):                       # chunks with valid CRCs, IHDR first, IEND last
+            pos, first, last = 8, None, None
+            while pos + 12 <= n:
+                length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
+                end = pos + 12 + length
+                if end > n or zlib.crc32(data[pos + 4:pos + 8 + length]) != struct.unpack(">I", data[end - 4:end])[0]:
+                    return None
+                first = first or ctype
+                last = ctype
+                pos = end
+                if ctype == b"IEND":
+                    break
+            return ("picture", "png") if first == b"IHDR" and last == b"IEND" and pos == n else None
+        if data.startswith(b"\xff\xd8\xff"):                             # marker segments up to the image data, EOI at the end
+            pos, saw_frame = 2, False
+            while pos + 4 <= n and data[pos] == 0xFF:
+                marker = data[pos + 1]
+                if marker == 0xDA:                                       # start of scan: compressed data follows
+                    # phone cameras often append extra data after the image, so only require an end marker to exist
+                    return ("picture", "jpg") if saw_frame and b"\xff\xd9" in data[pos:] else None
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    saw_frame = True
+                pos += 2 + struct.unpack(">H", data[pos + 2:pos + 4])[0]
+            return None
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            w, h = struct.unpack("<HH", data[6:10])
+            return ("picture", "gif") if w and h and data[-1:] == b"\x3b" else None
+        if data[:4] == b"RIFF" and data[8:12] in (b"WEBP", b"WAVE"):     # the declared size is the real size
+            if struct.unpack("<I", data[4:8])[0] + 8 not in (n, n - 1):
+                return None
+            if data[8:12] == b"WEBP":
+                return ("picture", "webp") if data[12:16] in (b"VP8 ", b"VP8L", b"VP8X") else None
+            return ("audio", "wav") if data[12:16] == b"fmt " else None
+        if data[:4] == b"OggS":
+            return ("audio", "ogg") if data[4] == 0 and n > 27 + data[26] and b"OggS" in data[27:65536] + data[-65536:] else None
+        if data[4:8] == b"ftyp":                                         # top-level boxes tile the whole file
+            pos, kinds = 0, []
+            while pos + 8 <= n:
+                size, kind = struct.unpack(">I4s", data[pos:pos + 8])
+                if size == 1 and pos + 16 <= n:
+                    size = struct.unpack(">Q", data[pos + 8:pos + 16])[0]
+                elif size == 0:
+                    size = n - pos
+                if size < 8 or pos + size > n:
+                    return None
+                kinds.append(kind)
+                pos += size
+            return ("video", "mp4") if pos == n and b"moov" in kinds and b"mdat" in kinds else None
+        if data[:4] == b"\x1a\x45\xdf\xa3":
+            return ("video", "webm") if b"webm" in data[:64] and b"\x18\x53\x80\x67" in data[:4096] else None
+        # MP3: optional ID3v2 tag, then at least four frames that follow one another exactly
+        pos = 0
+        if data[:3] == b"ID3" and n > 10:
+            pos = 10 + ((data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14 | (data[8] & 0x7F) << 7 | (data[9] & 0x7F))
+        bitrates = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
+        rates = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000)}
+        frames = 0
+        while pos + 4 <= n and frames < 4:
+            b1, b2 = data[pos + 1], data[pos + 2]
+            version, layer, br, sr = (b1 >> 3) & 3, (b1 >> 1) & 3, b2 >> 4, (b2 >> 2) & 3
+            if data[pos] != 0xFF or (b1 & 0xE0) != 0xE0 or version not in rates or layer != 1 or br in (0, 15) or sr == 3:
+                break
+            kbps = bitrates[br] if version == 3 else (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)[br]
+            pos += (144 if version == 3 else 72) * kbps * 1000 // rates[version][sr] + ((b2 >> 1) & 1)
+            frames += 1
+        return ("audio", "mp3") if frames == 4 else None
+    except (struct.error, IndexError):
+        return None
 
 
 def cmd_upload(req):
@@ -1741,7 +1821,7 @@ def cmd_upload(req):
         raise SwapError("The file is too large (limit %d MB)." % (max_bytes // (1024 * 1024)))
     with open(path, "rb") as f:
         data = f.read(max_bytes + 1)
-    kind = sniff_media(data[:16])
+    kind = sniff_media(data)
     if not kind:
         raise SwapError("This file type is not supported. Use PNG, JPG, GIF, WEBP, MP3, WAV, OGG, MP4 or WEBM.")
     media, ext = kind
@@ -1757,7 +1837,10 @@ def cmd_upload(req):
         headers={"Authorization": "Bearer " + key, "User-Agent": "sigmamint/1",
                  "Content-Type": "multipart/form-data; boundary=" + boundary})
     try:
-        with urllib.request.urlopen(request, timeout=120) as r:
+        class NoRedirect(urllib.request.HTTPRedirectHandler):    # the key must never follow a redirect elsewhere
+            def redirect_request(self, *args, **kwargs):
+                return None
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as r:
             res = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         sys.stderr.write("sigmaswap.py: Lighthouse upload refused: HTTP %d\n" % e.code)   # never log the key

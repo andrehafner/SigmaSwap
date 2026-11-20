@@ -33,14 +33,18 @@ use Fcntl qw(:flock);
 use Digest::SHA qw(sha256_hex hmac_sha256_hex);
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
+use Unicode::Normalize qw(NFKC);
 
-use constant APP_VERSION => 3;
+use constant APP_VERSION => 4;
 use constant ERG         => '0' x 64;
 
 my $MAX_MB = cfg('MINT_MAX_UPLOAD_MB', 10) + 0;
 $MAX_MB = 10 unless $MAX_MB >= 1 && $MAX_MB <= 100;
-$CGI::POST_MAX        = ($MAX_MB + 1) * 1024 * 1024;
-$CGI::DISABLE_UPLOADS = 0;
+# Large bodies and file uploads are accepted on the upload action only (named in the URL,
+# so it is known before the body is read); everything else is a small JSON post.
+my $IS_UPLOAD = (($ENV{QUERY_STRING} // '') =~ /(?:^|&)action=upload(?:&|\z)/) ? 1 : 0;
+$CGI::POST_MAX        = $IS_UPLOAD ? ($MAX_MB + 1) * 1024 * 1024 : 64 * 1024;
+$CGI::DISABLE_UPLOADS = $IS_UPLOAD ? 0 : 1;
 # CGI.pm spools an upload to a temp file: keep that in our own writable directory
 if (my $cd = cache_dir()) {
     my $tmp = File::Spec->catdir($cd, 'tmp');
@@ -141,6 +145,16 @@ sub posted_values {
 
 sub trim { my ($s) = @_; return '' unless defined $s && !ref $s; $s =~ s/^\s+|\s+\z//g; return $s }
 
+# One normal form and no invisible characters, BEFORE any check: "Sig<zero-width space>USD"
+# must be seen as the "SigUSD" it would be minted as.
+sub clean_name {
+    my ($s) = @_;
+    $s = NFKC(trim($s));
+    $s =~ s/[\p{Cf}\p{Cc}\p{Cs}\p{Co}\p{Cn}]//g;
+    $s =~ s/\s+/ /g;
+    return trim($s);
+}
+
 # Names that would pass for a well-known token: everything in the swap list.
 sub reserved_names {
     my %r = map { $_ => 1 } qw(erg ergo sigusd sigrsv);
@@ -160,7 +174,7 @@ sub reserved_names {
 sub check_draft {
     my ($kind, $in) = @_;
     my %d = (kind => $kind);
-    $d{name}        = trim($in->{name});
+    $d{name}        = clean_name($in->{name});
     $d{description} = trim($in->{description});
     return (undef, 'Enter a name.')                              unless length $d{name};
     return (undef, 'The name is too long (40 characters at most).') if length($d{name}) > 40;
@@ -202,7 +216,7 @@ sub new_draft {    # store what is to be minted under a random id; the wallet la
     my ($d) = @_;
     my $nonce = new_nonce();
     return undef unless defined $nonce && record_file($nonce);
-    save_record($nonce, { %$d, t => time });
+    save_record($nonce, { %$d, app => 'mint', t => time });
     return load_record($nonce) ? $nonce : undef;
 }
 
@@ -453,6 +467,7 @@ sub act_ergopay {
     return ergopay_error('Invalid request.')
         unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/ && defined $addr && $addr =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/;
     my $d = load_record($nonce) or return ergopay_error('This mint request has expired. Start again in SigmaMint.');
+    return ergopay_error('This mint request is not valid. Start again in SigmaMint.') unless ($d->{app} // '') eq 'mint';
     return ergopay_error('This mint was already submitted. Start a new one in SigmaMint.')
         if $d->{tx_id} && (mint_status($nonce))[0] =~ /^(pending|confirmed)\z/;
 
@@ -487,7 +502,7 @@ sub web_config {
 # and per day. Counters live in one small file; visitor addresses are kept only as
 # a salted hash for the current day.
 sub upload_allowed {
-    my ($bytes) = @_;
+    my ($bytes, $count_it) = @_;    # asked twice: before the upload (may it?) and after it worked (count it)
     my $file = File::Spec->catfile(cache_dir(), 'mint-limits.json');
     open(my $fh, '+>>', $file) or return 0;
     flock($fh, LOCK_EX) or return 0;
@@ -501,13 +516,16 @@ sub upload_allowed {
     $d = { day => $day, count => 0, bytes => 0, who => {} } unless ($d->{day} // '') eq $day && ref $d->{who} eq 'HASH';
     my $who = substr(sha256_hex("$day|" . ($ENV{REMOTE_ADDR} || '?')), 0, 16);
     my $w   = $d->{who}{$who};
-    $w = { hour => $hour, n => 0 } unless ref $w eq 'HASH' && ($w->{hour} // -1) == $hour;
+    $w = { hour => $hour, n => 0, day => ($w && ref $w eq 'HASH' ? ($w->{day} // 0) : 0) }
+        unless ref $w eq 'HASH' && ($w->{hour} // -1) == $hour;
 
     my $ok = $w->{n} < (cfg('MINT_UPLOADS_PER_HOUR', 10) + 0)
+          && ($w->{day} // 0) < (cfg('MINT_UPLOADS_PER_VISITOR_DAY', 30) + 0)
           && $d->{count} < (cfg('MINT_UPLOADS_PER_DAY', 300) + 0)
           && $d->{bytes} + $bytes <= (cfg('MINT_UPLOAD_MB_PER_DAY', 1000) + 0) * 1024 * 1024;
-    if ($ok) {
+    if ($ok && $count_it) {    # only uploads that were accepted count: junk cannot use up the allowance
         $w->{n}++;
+        $w->{day} = ($w->{day} // 0) + 1;
         $d->{who}{$who} = $w;
         $d->{count}++;
         $d->{bytes} += $bytes;
@@ -529,10 +547,11 @@ sub web_upload {
     my $size = -s $tmp;
     return die_json('The file is empty.') unless $size;
     return die_json("The file is too large (limit $MAX_MB MB).") if $size > $MAX_MB * 1024 * 1024;
-    return die_json('Too many uploads right now. Please try again later.') unless upload_allowed($size);
+    return die_json('Too many uploads right now. Please try again later.') unless upload_allowed($size, 0);
 
     my $r = chain('upload', { path => $tmp, key => cfg('LIGHTHOUSE_API_KEY'), max_bytes => $MAX_MB * 1024 * 1024 }, 150);
     return die_json($r->{error} || 'The upload failed. Please try again.') unless $r->{ok};
+    upload_allowed($size, 1);
     warn "sigmamint: uploaded $r->{media} $r->{cid} ($r->{size} bytes)\n";    # security log: no file names, no key
     # attach the file to the wallet session: the wallet picks it up from here, nothing to copy
     save_record(session_key($session), { cid => $r->{cid}, sha256 => $r->{sha256}, media => $r->{media}, t => time });

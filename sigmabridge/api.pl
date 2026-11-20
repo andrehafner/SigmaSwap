@@ -28,7 +28,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 3;
+use constant APP_VERSION => 4;
 use constant CHAINS      => (cardano => 'Cardano', ethereum => 'Ethereum', binance => 'BNB Chain', 'bitcoin-runes' => 'Bitcoin Runes',
                             bitcoin => 'Bitcoin', doge => 'Dogecoin', firo => 'Firo');
 use constant CHAIN_ORDER => qw(cardano ethereum binance bitcoin-runes bitcoin doge firo);    # same order as the Rosen app
@@ -242,7 +242,7 @@ sub act_preview {
         my $nonce = new_nonce();
         return mosaik_dialog('The bridge is unavailable right now. Please try again later.') unless defined $nonce && record_file($nonce);
         # what was previewed is stored; the wallet later asks for exactly this by its id
-        save_record($nonce, { t => time, draft => 1, token => $t->{id}, name => $t->{name}, decimals => $t->{decimals},
+        save_record($nonce, { app => 'bridge', from_address => $s->{address}, t => time, draft => 1, token => $t->{id}, name => $t->{name}, decimals => $t->{decimals},
                               chain => $s->{chain}, to => $q->{to}, amount => $s->{amount},
                               max_fees => Math::BigInt->new($q->{bridge_fee})->badd($q->{network_fee})->bstr });
         watch_add('bridge', $nonce);
@@ -319,7 +319,15 @@ sub act_ergopay {
     my $addr  = good_address(scalar $cgi->param('addr'));
     return ergopay_error('Invalid request.') unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/ && $addr;
     my $d = load_record($nonce) or return ergopay_error('This transfer request has expired. Start again in SigmaBridge.');
-    return ergopay_error('This transfer was already prepared. Start a new one in SigmaBridge.') if $d->{tx_id};
+    return ergopay_error('This transfer request is not valid. Start again in SigmaBridge.') unless ($d->{app} // '') eq 'bridge';
+    # only for the Ergo address the transfer was previewed with
+    return ergopay_error('This transfer was prepared for a different wallet address. Start again in SigmaBridge.')
+        unless ($d->{from_address} // '') eq $addr;
+    if ($d->{tx_id}) {    # fetched before: fine to build again, unless that one is already on its way
+        my $st = chain('status', { tx_id => $d->{tx_id}, watch_box => $d->{watch_box}, mode => 'bridge', address => $d->{address} });
+        return ergopay_error('This transfer was already sent. Start a new one in SigmaBridge.')
+            if $st->{ok} && ($st->{state} // '') =~ /^(pending|confirmed)\z/;
+    }
     my %names = CHAINS;
 
     my $r = chain('bridgebuild', { map({ $_ => $d->{$_} } qw(token chain to amount max_fees)), address => $addr }, 60);

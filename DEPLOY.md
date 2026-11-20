@@ -253,6 +253,33 @@ before a code update, set `ROSEN_LOCK_ADDRESS` / `ROSEN_MINFEE_NFT` in the env f
 from Rosen's own release file. `sigmabridge/tokens.json` (which tokens go to which chains) is
 refreshed with `tools/fetch_bridge_tokens.py`.
 
+## Before going public
+
+These are deployment-side protections the code cannot provide for itself.
+
+1. **The cache directory must not be served.** It holds `mint-secret`, upload counters, transaction
+   notes and notification lists. Both of these must NOT return the file (expect 403 or 404):
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' https://public.aap.cornell.edu/apps/uploads/sigmaswap/mint-secret
+   curl -sS -o /dev/null -w '%{http_code}\n' https://public.aap.cornell.edu/apps/sigmaswap/uploads/mint-secret
+   ```
+
+   If either returns 200, move the cache out of the served tree: create a directory such as
+   `/data/AAP_Storage/cache/sigmaswap` (owner `apache`, mode `2770`), add the
+   `httpd_sys_rw_content_t` rule for it, set `CACHE_DIR` to it, delete the old `mint-secret`.
+
+2. **Rate limiting.** The apps have no login, and every request starts a Python process and makes
+   several calls to the Ergo explorer. Nothing in the code limits how often one visitor may do
+   that. Put a per-address request limit on `/apps/sigmaswap` in Apache before publicising the
+   links, for example with `mod_qos` or `mod_evasive` (a few requests per second per address is
+   far more than a real wallet needs).
+
+3. **Set `BASE_URL`** in the env file if the apps are served under one public host name.
+
+4. **Do not publish internal documentation.** `CLAUDE.md` in this repository is the internal AAP
+   development reference, not part of the apps.
+
 ## Token logos
 
 The logos in `icons/` are ordinary files in the repository; a `git pull` brings new ones. To add

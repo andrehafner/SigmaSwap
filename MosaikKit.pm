@@ -16,7 +16,7 @@ use AppConfig qw(cfg chain);
 
 my $ERG_ID = '0' x 64;
 
-our @EXPORT = qw(get_pools registry watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
+our @EXPORT = qw(note_is_ours get_pools registry watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
 
 sub O     { my @kv = @_; my @o; while (@kv) { my ($k, $v) = splice(@kv, 0, 2); push @o, $k, $v if defined $v } return bless \@o, 'JObj' }
 
@@ -137,6 +137,7 @@ sub save_record {
         close $fh;
         rename($tmp, $file) or unlink $tmp;
     }
+    _purge(File::Spec->catdir(cache_dir(), 'watch'), 60 * 86400) if int(rand(200)) == 0;
     # housekeeping, now and then: records are only useful for a day or two
     if (int(rand(25)) == 0 && opendir(my $dh, File::Spec->catdir(cache_dir(), 'tx'))) {
         for my $f (grep { /^[0-9a-f]{32}\.json\z/ } readdir $dh) {
@@ -222,6 +223,25 @@ sub registry {
     }
     my @order = sort { ($b eq $ERG_ID) <=> ($a eq $ERG_ID) || $tok{$b}{tvl} <=> $tok{$a}{tvl} || $a cmp $b } keys %tok;
     return { tokens => \%tok, order => \@order, pair => \%pair };
+}
+
+# The note ids in signing links come from the client. A note may only be written
+# where none exists yet, or over one the same app wrote: one app can never
+# overwrite another's (a bridge draft, say) through a guessed or leaked id.
+sub note_is_ours {
+    my ($nonce, $app) = @_;
+    my $old = load_record($nonce) or return 1;
+    return (($old->{app} // '') eq $app) ? 1 : 0;
+}
+
+sub _purge {    # delete files older than $age seconds
+    my ($dir, $age) = @_;
+    opendir(my $dh, $dir) or return;
+    for my $f (grep { /^[0-9a-f]{32,64}\.json\z/ } readdir $dh) {
+        my $p = File::Spec->catfile($dir, $f);
+        unlink $p if time - ((stat $p)[9] || time) > $age;
+    }
+    closedir $dh;
 }
 
 # ---- notifications -----------------------------------------------------------
@@ -324,6 +344,9 @@ sub order_register {
     return unless -d $dir && -w $dir;
     my $file = File::Spec->catfile($dir, "$box_id.json");
     return if -e $file;
+    # anyone can cause a registration, so the directory is bounded; the bot drops
+    # entries that never show up on-chain after a few hours
+    if (opendir(my $dh, $dir)) { my $n = grep { /\.json\z/ } readdir $dh; closedir $dh; return if $n >= 20000 }
     if (open(my $fh, '>', $file)) {
         print {$fh} JSON::PP->new->utf8->encode({ order_box => $box_id, address => $address, t => time });
         close $fh;
