@@ -5,3 +5,6 @@ cache/
 *.env
 !*.env.example
 tools/.raw/
+
+# internal development reference: never part of this repository
+CLAUDE.md

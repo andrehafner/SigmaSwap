@@ -2,7 +2,7 @@
 
 App: `sigmaswap` · URL: `https://public.aap.cornell.edu/apps/sigmaswap/` (works unchanged on `private.aap`)
 
-This app differs from the usual AAP app in three ways — everything else follows `CLAUDE.md`:
+This app differs from a typical app on this server in three ways:
 
 | Usual AAP app | SigmaSwap |
 |---|---|
@@ -277,8 +277,8 @@ These are deployment-side protections the code cannot provide for itself.
 
 3. **Set `BASE_URL`** in the env file if the apps are served under one public host name.
 
-4. **Do not publish internal documentation.** `CLAUDE.md` in this repository is the internal AAP
-   development reference, not part of the apps.
+4. **Keep internal documentation out of the repository.** Server conventions and other internal
+   notes do not belong in a public repo; `.gitignore` excludes `CLAUDE.md` for that reason.
 
 ## Token logos
 
