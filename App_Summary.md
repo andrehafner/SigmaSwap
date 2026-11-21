@@ -6,7 +6,7 @@
   ErgoDex liquidity pools. Swaps only — no liquidity provision, no order book.
 - Two ways to execute a swap: **direct** (one transaction against the pool) or, for ERG pairs,
   an **order** (funds go into an ErgoDex swap-order contract that ErgoDex's bots execute).
-- Used by anyone with an Ergo wallet. It is public: no Cornell login, no accounts.
+- Used by anyone with an Ergo wallet. It is public: no login, no accounts.
 - The server prepares an unsigned transaction; the user's wallet displays and signs it (ErgoPay).
   The server never holds keys or funds. It stores no accounts; the only thing it keeps is a
   short-lived note of each transaction it built, to report afterwards whether it went through.
@@ -53,7 +53,7 @@
 - **LP map** — `CACHE_DIR/lpmap.json`: which LP token belongs to which pool (public chain data).
 - **Request data, otherwise not stored**: Ergo address, token ids, amounts. Ergo addresses are public
   pseudonymous identifiers. Classification: **low**. No FERPA data, no NetIDs, no names, no email.
-- **Logs** (`ssl_error_log`): transaction id + first 8 characters of the pool id per built swap,
+- **Logs** (`/var/log/apache2/error.log`): transaction id + first 8 characters of the pool id per built swap,
   and error details. Apache's access log records the ErgoPay request URL, which contains the
   address and amounts (public on-chain once the swap confirms).
 
@@ -141,9 +141,8 @@
 
 ## 5. Authentication & authorization
 
-- **Authentication: none, by design.** The app is not behind Shibboleth
-  (`deploy/sigmaswap.conf`: `AuthType None`, `ShibRequestSetting requireSession false`,
-  `Require all granted`). The Ergo wallet app cannot perform an interactive SSO login.
+- **Authentication: none, by design.** There is no login of any kind
+  (`deploy/sigmaswap.conf`: `Require all granted`). The Ergo wallet app cannot perform an interactive SSO login.
 - **Authorization**: nothing to authorize — there are no stored records, no per-user data, and no
   state-changing server action. Every action is a read of public chain data or the construction of
   an unsigned transaction.
@@ -166,21 +165,21 @@
   other chain is done by Rosen's watchers and guards. Lock address, fee-table token and box format
   were taken from Rosen's public code and confirmed against live transfers on-chain.
 - **Explorer submit endpoint**: used only by the order bot to broadcast fill transactions.
-- No SMTP, no Oracle, no MariaDB. Outbound hosts are fixed in configuration, never taken from a
+- No e-mail and no database (no MySQL or MariaDB). Outbound hosts are fixed in configuration, never taken from a
   request (no SSRF surface).
 
 ## 7. File locations
 
-- App: `/data/AAP_Storage/apps/sigmaswap/` (URL `/apps/sigmaswap`)
+- App: `/usr/lib/cgi-bin/sigmaswap/` (URL `/cgi-bin/sigmaswap/`)
   - `api.pl` all HTTP logic · `AppConfig.pm` config + helper runner · `sigmaswap.py` chain logic
   - `index.html` / `app.js` / `style.css` / `icon.png` landing page
   - `icons/<token id>.png` bundled token logos (shown on the quote card and the landing page),
     built by the dev tool `tools/fetch_icons.py` from ergodex.io and the Spectrum token-logos
     repository; `icons/unknown.png` is the placeholder
   - `venv/` Python virtualenv (not in git) · `deploy/sigmaswap.conf` · `redeploy.sh`
-- Settings: `/data/AAP_Storage/secrets/sigmaswap.env` (no secrets inside)
-- Cache: `/data/AAP_Storage/apps/uploads/sigmaswap/pools.json`
-- Logs: `/var/log/httpd/ssl_error_log`, `/var/log/httpd/ssl_access_log`
+- Settings: `/etc/sigmaswap/sigmaswap.env` (holds the one secret, `LIGHTHOUSE_API_KEY`)
+- Cache: `/var/lib/sigmaswap/` (`pools.json`, `tx/`, `watch/`, `orders/`, `tmp/`, `mint-secret`, `mint-limits.json`)
+- Logs: `/var/log/apache2/error.log`, `/var/log/apache2/access.log`
 
 ## 8. Security controls
 
@@ -208,7 +207,7 @@
   note, stored under an unguessable random id supplied with the request; file names are validated
   (`^[0-9a-f]{32}$`), so nothing else can be written or read through it.
 - **Errors**: generic messages to the client, details only in the server log.
-- **Secrets**: one, `LIGHTHOUSE_API_KEY`, in the env file outside the web root (`640 root:apache`).
+- **Secrets**: one, `LIGHTHOUSE_API_KEY`, in the env file outside the web root (`640 root:www-data`).
   It is passed to the helper on stdin (never on a command line), sent only as the Authorization
   header to the configured Lighthouse host, never returned to a client and never logged.
 - **Upload controls (SigmaMint)**: size limit (default 10 MB, enforced before and after receipt);
@@ -222,31 +221,28 @@
 - **Token names**: names equal to a token in the swap list are refused, and the app states that a
   name does not make a token official.
 - **Web exposure**: Apache serves only the web files; `.py`, `.pm`, `.sh`, `.md`, `venv/`,
-  `deploy/`, `.git` are denied. App tree is root-owned and not writable by Apache.
+  `deploy/`, `.git` are denied. App tree is root-owned and not writable by the web server.
 - **Transport**: HTTPS only (ErgoPay `ergopay://` URLs are fetched over HTTPS by the wallet).
 
 ## 9. Backup & recovery
 
 - Nothing to back up: no database, no uploads. The cache is disposable and rebuilds itself; losing
   `tx/` only means recent swaps show "waiting for your wallet" instead of their status.
-- Recovery = redeploy from git following `DEPLOY.md` (clone, venv, env file, SELinux rules,
+- Recovery = redeploy from git following `DEPLOY.md` (clone, venv, settings file,
   Apache include, `redeploy.sh`).
 
 ## 10. Known limitations & risks
 
-- **Public and unauthenticated on a Cornell host** — a deliberate exception to the Shibboleth
-  baseline. There is no rate limiting in the app; each quote/swap request makes 1–4 outbound API
+- **Public and unauthenticated.** There is no rate limiting in the app; each quote/swap request makes 1–4 outbound API
   calls and starts a Python process. Add Apache-level rate limiting if it is abused.
 - **SigmaMint: anonymous uploads go to the operator's Lighthouse account.** Uploading needs
   a session started in the wallet app, which stops drive-by use of the page, but the app has no
   login, so anyone who opens it can still store a picture, sound or video (up to the limits) under
   that account, and it cannot be removed from IPFS afterwards. Content is not reviewed or scanned. The limits and the kill switch
   bound the volume, not the content. This is the main policy risk of the deployment.
-- **SigmaMint: anonymous token minting on a cornell.edu host.** Minting is permissionless on Ergo,
-  but tokens and NFTs minted here could be presented as associated with the host.
 - **The order bot sends transactions on its own.** It holds no keys and can only fill an order in
-  the owner's favour (the contract enforces it), but it is an always-on process on a university
-  host acting on a public blockchain. `ORDER_BOT=0` or disabling the timer stops it; orders then
+  the owner's favour (the contract enforces it), but it is an always-on process
+  acting on a public blockchain. `ORDER_BOT=0` or disabling the timer stops it; orders then
   wait for ErgoDex's own bots or the owner's cancel.
 - **Limit orders may never fill**, and fill only while the bot runs. They can be cancelled any time.
 - **SigmaBridge: funds leave Ergo irreversibly.** A wrong (but well-formed) target address, or an
@@ -287,4 +283,4 @@
 - **Order mode has not been executed by a real bot from this app**: order creation, a simulated
   bot execution against live pools, and refunds were all signed with a test wallet in ergo-lib,
   but no order from this app was broadcast. Make the first real order a small one.
-- Data classification: low-risk public data only (Policy 5.10); no moderate/high-risk data.
+- Data classification: public blockchain data only; no personal or account data.

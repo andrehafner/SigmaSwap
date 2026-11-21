@@ -51,7 +51,7 @@ sub cfg {
     return (defined $ENVFILE{$key} && $ENVFILE{$key} ne '') ? $ENVFILE{$key} : $default;
 }
 
-# Public base URL of the app directory, e.g. https://public.aap.cornell.edu/apps/sigmaswap
+# Public base URL of the app directory, e.g. https://my.ergoport.dev/cgi-bin/sigmaswap
 # Derived from the request so the same checkout serves either vhost; BASE_URL overrides it.
 sub base_url {
     my $base = cfg('BASE_URL');

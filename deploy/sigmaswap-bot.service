@@ -3,7 +3,10 @@
 # Completes swap orders placed through SigmaSwap once the pool can pay their
 # minimum (this is what makes limit orders fill). It holds NO keys: completing an
 # order is a transaction anyone may send. It runs as the web user, reads the same
-# settings file, and only touches the cache directory.
+# settings file, and only writes to the cache directory.
+#
+# If your web server runs as a user other than www-data (e.g. apache), change
+# User= and Group= below.
 [Unit]
 Description=SigmaSwap order bot (one pass)
 After=network-online.target
@@ -11,10 +14,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=apache
-Group=apache
-Environment=APP_ENV_FILE=/data/AAP_Storage/secrets/sigmaswap.env
-ExecStart=/data/AAP_Storage/apps/sigmaswap/venv/bin/python -I -B /data/AAP_Storage/apps/sigmaswap/sigmaswap.py bot
+User=www-data
+Group=www-data
+Environment=APP_ENV_FILE=/etc/sigmaswap/sigmaswap.env
+ExecStart=/usr/lib/cgi-bin/sigmaswap/venv/bin/python -I -B /usr/lib/cgi-bin/sigmaswap/sigmaswap.py bot
 TimeoutStartSec=50
 Nice=10
 NoNewPrivileges=true

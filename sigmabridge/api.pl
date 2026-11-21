@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # SigmaBridge - send ERG and tokens from Ergo to another chain over the Rosen bridge.
 # A subdirectory app of SigmaSwap (shared config, helper, venv, cache):
-#   https://<host>/apps/sigmaswap/sigmabridge/
+#   https://<host>/cgi-bin/sigmaswap/sigmabridge/
 #
 #   Mosaik
 #     GET  api.pl                  -> the form

@@ -1,351 +1,275 @@
-# SigmaSwap — Deployment (Oracle Linux 9 / Apache / SELinux)
+# SigmaSwap — Deployment (Debian / Ubuntu, Apache, `/usr/lib/cgi-bin`)
 
-App: `sigmaswap` · URL: `https://public.aap.cornell.edu/apps/sigmaswap/` (works unchanged on `private.aap`)
+Installs the four apps (SigmaSwap, SigmaLP, SigmaMint, SigmaBridge) from one checkout:
 
-This app differs from a typical app on this server in three ways:
-
-| Usual AAP app | SigmaSwap |
+| | |
 |---|---|
-| Shibboleth login | **Public, no Shibboleth** (opened by the Ergo wallet app, which cannot log in) |
-| MariaDB | **No database** (stateless; nothing is stored) |
-| Perl only | Perl CGI **plus a Python virtualenv** (`venv/`) used to build Ergo transactions |
+| Code | `/usr/lib/cgi-bin/sigmaswap/` |
+| URL | `https://YOUR-HOST/cgi-bin/sigmaswap/` (and `…/sigmalp/`, `…/sigmamint/`, `…/sigmabridge/`) |
+| Settings | `/etc/sigmaswap/sigmaswap.env` |
+| Cache | `/var/lib/sigmaswap/` (writable by the web server, not served) |
+| Logs | `/var/log/apache2/error.log` (lines start with `sigmaswap`) |
 
-Do the steps in order. Do not test in a wallet until every **GATE** passes.
+The examples use `my.ergoport.dev`. Replace it with your host name.
+
+**There is no database.** The apps need no MySQL or MariaDB: no tables, no user, no grants. They
+keep a few small files in the cache directory and read everything else from the blockchain.
+
+The server must already serve HTTPS for the host name and have the standard
+`ScriptAlias /cgi-bin/ /usr/lib/cgi-bin/` (Debian's `serve-cgi-bin` conf, on by default). On a
+RHEL-family server with SELinux, also read the appendix at the end.
 
 ## 1. Packages
 
 ```bash
-sudo dnf install -y perl perl-CGI python3 git policycoreutils-python-utils
-perl -MCGI -MJSON::PP -MMath::BigFloat -MIPC::Open2 -e 'print "perl ok\n"'    # VERIFY
-python3 --version                                                             # 3.9 or newer
+sudo apt update
+sudo apt install -y apache2 git perl libcgi-pm-perl python3 python3-venv ca-certificates curl
 ```
+
+Everything else the Perl scripts use ships with Perl itself. Python 3.8 or newer is required.
 
 ## 2. Code
 
 ```bash
-sudo mkdir -p /data/AAP_Storage/apps
-cd /data/AAP_Storage/apps
-sudo git clone <repo-url> sigmaswap        # later: cd sigmaswap && sudo git pull
+sudo git clone https://github.com/andrehafner/SigmaSwap.git /usr/lib/cgi-bin/sigmaswap
+cd /usr/lib/cgi-bin/sigmaswap
 ```
 
 ## 3. Python virtualenv (transaction builder)
 
 ```bash
-cd /data/AAP_Storage/apps/sigmaswap
+cd /usr/lib/cgi-bin/sigmaswap
 sudo python3 -m venv venv
-sudo venv/bin/pip install --upgrade pip
-sudo venv/bin/pip install -r requirements.txt
-sudo venv/bin/python -c 'import ergo_lib_python; print("ergo-lib", ergo_lib_python.__version__)'   # VERIFY
+sudo venv/bin/python -m pip install -r requirements.txt
+sudo venv/bin/python -I -c 'import ergo_lib_python; print("ok")'      # must print ok
 ```
-
-`venv/` is git-ignored: a `git pull` never touches it. Re-run the two `pip` lines only when
-`requirements.txt` changes (then `sudo ./redeploy.sh`).
 
 ## 4. Settings file + cache directory
 
-No secrets exist for this app, but it uses the standard env-file mechanism for settings.
+```bash
+sudo mkdir -p /etc/sigmaswap /var/lib/sigmaswap
+sudo chown www-data:www-data /var/lib/sigmaswap && sudo chmod 750 /var/lib/sigmaswap
+sudo cp sigmaswap.env.example /etc/sigmaswap/sigmaswap.env
+sudo nano /etc/sigmaswap/sigmaswap.env
+```
+
+Set these three lines (everything else can stay as it is):
+
+```
+CACHE_DIR=/var/lib/sigmaswap
+BASE_URL=https://my.ergoport.dev/cgi-bin/sigmaswap
+LIGHTHOUSE_API_KEY=<your Lighthouse key>      # the only secret; empty = NFT minting off, tokens still work
+```
+
+Set `BASE_URL` always. It is what the signing links handed to wallets are built from, and it is
+required if HTTPS ends at a proxy (Cloudflare, nginx) in front of Apache.
+
+## 5. Apache
 
 ```bash
-sudo install -m 640 -o root -g apache sigmaswap.env.example /data/AAP_Storage/secrets/sigmaswap.env
-sudo install -d -m 2770 -o apache -g apache /data/AAP_Storage/apps/uploads/sigmaswap    # pool-list cache
+sudo cp deploy/sigmaswap.conf /etc/apache2/conf-available/sigmaswap.conf
+sudo a2enmod cgid headers
+sudo a2enconf sigmaswap
+sudo apache2ctl configtest && sudo systemctl reload apache2
 ```
 
-The defaults in the file are production-ready. `BASE_URL` stays empty so the same checkout serves
-both vhosts.
+Why the include is needed: `/cgi-bin/` is a ScriptAlias, so Apache would try to *run* every file
+in it, including `index.html`, the style sheet and the logos. The include makes only the `.pl`
+files programs, serves the web files as plain files, and refuses everything else (`.py`, `.pm`,
+`.md`, `venv/`, `deploy/`, `tools/`, `.git`).
 
-## 5. One-time SELinux rules
+If a module was newly enabled, use `sudo systemctl restart apache2` instead of reload.
+
+## 6. Owner and permissions
 
 ```bash
-sudo semanage fcontext -a -t httpd_sys_content_t     '/data/AAP_Storage/apps/sigmaswap(/.*)?'
-sudo semanage fcontext -a -t httpd_sys_script_exec_t '/data/AAP_Storage/apps/sigmaswap/.*\.pl'
-sudo semanage fcontext -a -t httpd_sys_script_exec_t '/data/AAP_Storage/apps/sigmaswap/venv(/.*)?'
-sudo semanage fcontext -a -t httpd_sys_content_t     '/data/AAP_Storage/secrets/sigmaswap\.env'
-sudo semanage fcontext -a -t httpd_sys_rw_content_t  '/data/AAP_Storage/apps/uploads/sigmaswap(/.*)?'
-sudo restorecon -RF /data/AAP_Storage/apps/uploads/sigmaswap /data/AAP_Storage/secrets/sigmaswap.env
-
-# the CGI makes outbound HTTPS calls (Ergo explorer + ErgoDex API)
-sudo setsebool -P httpd_can_network_connect 1
+cd /usr/lib/cgi-bin/sigmaswap && sudo ./redeploy.sh
 ```
 
-If an `-a` reports "already defined", use `-m` instead. If a broader existing rule for
-`/data/AAP_Storage/apps(/.*)?` wins over these, the more specific rule still applies as long as it
-was added later; `redeploy.sh` tells you when it did not.
+It must end with `Done.` Any line marked `WRONG` says what to fix. Run it again after every
+change to the directory.
 
-## 6. Apache
+## 7. Checks (do these before opening the wallet)
 
 ```bash
-sudo cp deploy/sigmaswap.conf /etc/httpd/conf.d/sigmaswap.conf
-sudo httpd -t && sudo systemctl restart httpd
+H=https://my.ergoport.dev/cgi-bin/sigmaswap
+
+# C1 the whole stack through Apache
+curl -sS "$H/api.pl?action=health"; echo
+#   {"success":1,"helper":"ok","height":19xxxxx,"pools":NN,"base_url":"https://my.ergoport.dev/cgi-bin/sigmaswap"}
+#   base_url must be exactly your public https address.
+
+# C2 the four apps answer with their Mosaik JSON
+for a in "" sigmalp/ sigmamint/ sigmabridge/; do curl -sS "$H/${a}api.pl" | head -c 45; echo; done
+#   {"manifest":{"appName":"SigmaSwap",...   SigmaLP, SigmaMint, SigmaBridge
+
+# C3 web files are served as files (200), source and secrets are not (403)
+for p in / style.css icons/unknown.png sigmamint/ sigmaswap.py AppConfig.pm venv/pyvenv.cfg .git/config README.md; do
+  printf '%s  %s\n' "$(curl -sS -o /dev/null -w '%{http_code}' "$H/$p")" "$p"; done
+#   200 for the first four, 403 for the rest
+
+# C4 the cache is being written
+sudo ls -l /var/lib/sigmaswap/          # pools.json appears after C1
 ```
 
-**Shibboleth:** the include sets `AuthType None`, `ShibRequestSetting requireSession false` and
-`Require all granted` for this directory. If the vhost protects `/apps` with a `<Location>` block
-(Location is merged *after* Directory and would win), add this next to that block:
+Then, in the Ergo wallet app: **dApps → enter `https://my.ergoport.dev/cgi-bin/sigmaswap/`**, and
+the same with `sigmalp/`, `sigmamint/`, `sigmabridge/` appended.
 
-```apache
-<Location /apps/sigmaswap>
-    AuthType None
-    ShibRequestSetting requireSession false
-    Require all granted
-</Location>
-```
+## 8. Order bot (limit orders)
 
-## 7. Redeploy (labels, owner, perms)
+Orders, and limit orders in particular, are completed by a small bot: once a minute it looks for
+open SigmaSwap orders and, when the pool can pay an order's minimum, broadcasts the transaction
+that fills it. It holds no keys; filling an order is a transaction anyone may send. Without it,
+limit orders wait for somebody else's bot.
 
 ```bash
-cd /data/AAP_Storage/apps/sigmaswap && sudo ./redeploy.sh
-```
-
-It must end with `Done.` — it verifies the labels itself and exits non-zero with instructions when
-they are wrong. **Run it after every `git pull`, edit, or `pip install`.**
-
-## 8. GATES
-
-```bash
-# G1 labels
-ls -Z api.pl            # ... httpd_sys_script_exec_t
-ls -dZ venv             # ... httpd_sys_script_exec_t
-
-# G2 outbound network from the server
-curl -sS -m 15 https://api.ergoplatform.com/api/v1/info | head -c 80; echo
-curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://api.ergodex.io/v1/amm/pools/stats   # 200
-
-# G3 the whole stack THROUGH Apache + SELinux, and with NO login
-curl -sS -X POST -d action=health https://public.aap.cornell.edu/apps/sigmaswap/api.pl; echo
-#   {"success":1,"helper":"ok","height":19xxxxx,"pools":NN,"base_url":"https://public.aap.cornell.edu/apps/sigmaswap"}
-
-# G4 the Mosaik app JSON
-curl -sS https://public.aap.cornell.edu/apps/sigmaswap/api.pl | head -c 120; echo
-#   {"manifest":{"appName":"SigmaSwap",...
-
-# G5 cache is being written outside the tree
-ls -l /data/AAP_Storage/apps/uploads/sigmaswap/pools.json
-```
-
-G3 must return JSON, **not** a Cornell login redirect (302 / HTML). If it redirects, Shibboleth is
-still protecting the path — see step 6.
-
-Then, in the Ergo wallet app: **dApps → enter** `https://public.aap.cornell.edu/apps/sigmaswap/`.
-Do a first swap with a small amount.
-
-## Updating
-
-```bash
-cd /data/AAP_Storage/apps/sigmaswap && sudo git pull && sudo ./redeploy.sh
-```
-
-If the Mosaik screen changed, bump `APP_VERSION` in `api.pl`: wallets that have the app open then
-reload it instead of mixing old and new screens.
-
-Order mode, pending-swap chaining and the status screen (v2/v3) need nothing new on the server: no
-new packages, no SELinux or Apache changes. Status notes are written to `tx/` inside the existing
-cache directory. The optional keys (`ORDER_*`, `USE_MEMPOOL`, `EXPLORER_WEB_URL`) are described in
-`sigmaswap.env.example`.
-
-## SigmaMint (`sigmamint/`)
-
-Token and NFT minting, served from the same checkout at
-`https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/`. It shares the venv, the Python helper,
-`AppConfig.pm`, the env file and the cache directory, so there is **no new package, Apache or
-SELinux step**. `redeploy.sh` covers it.
-
-1. **API key (the app's only secret).** Add your Lighthouse key to the env file, then relabel it:
-
-   ```bash
-   sudoedit /data/AAP_Storage/secrets/sigmaswap.env        # LIGHTHOUSE_API_KEY=...
-   sudo restorecon -F /data/AAP_Storage/secrets/sigmaswap.env
-   ```
-
-   Without a key, tokens can still be minted but NFTs cannot (there is nowhere to put the file).
-
-2. **Outbound network** (the server relays uploaded files to Lighthouse):
-
-   ```bash
-   curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://upload.lighthouse.storage/      # any HTTP answer, not a timeout
-   ```
-
-   The wallet itself (not the server) loads the NFT preview picture from
-   `gateway.lighthouse.storage`.
-
-3. **GATES**
-
-   ```bash
-   ls -Z sigmamint/api.pl                                    # httpd_sys_script_exec_t
-   curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl | head -c 80; echo      # {"manifest":{"appName":"SigmaMint",...
-   curl -sS -F action=config https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/api.pl; echo  # {"success":1,"uploads":0,"max_mb":10}
-   ```
-
-   `"uploads":0` is CORRECT here: uploading only works from a session started in the wallet, so a
-   plain request is refused. The real test is in the wallet: Mint an NFT -> Choose file -> pick a
-   small picture -> "File added" -> back to the wallet -> Preview shows the picture.
-   If the picker page says "This page has expired" straight away, the key is missing/empty,
-   `MINT_UPLOADS=0`, or the cache directory is not writable (the session secret lives there as
-   `mint-secret`).
-
-Uploads are spooled to `tmp/` inside the cache directory while they are checked and relayed, then
-deleted; counters for the upload limits are in `mint-limits.json` there. Limits and the kill switch
-(`MINT_UPLOADS=0`) are in `sigmaswap.env.example`.
-
-```
-Upload says "Uploads are not available right now"
-  -> ssl_error_log: "Lighthouse upload refused: HTTP 401/403" = wrong or revoked API key.
-Upload says "Too many uploads right now"
-  -> a limit was hit (per visitor per hour, or per day). Raise it in the env file if intended.
-Upload fails with "Something went wrong" and nothing in the log about Lighthouse
-  -> the cache directory is not apache-writable (step 4 of the main install) or the helper timed out
-     on a slow link; large files need a few minutes.
-```
-
-## Order bot (limit orders)
-
-SigmaSwap orders, and limit orders in particular, are completed by a small bot: every minute it
-looks at the orders SigmaSwap registered (`orders/` in the cache directory) and, when the pool can
-pay an order's minimum, broadcasts the transaction that fills it. It holds no keys; filling an
-order is a transaction anyone may send. Without it, limit orders do not fill.
-
-```bash
-cd /data/AAP_Storage/apps/sigmaswap
+cd /usr/lib/cgi-bin/sigmaswap
 sudo cp deploy/sigmaswap-bot.service deploy/sigmaswap-bot.timer /etc/systemd/system/
-sudo restorecon -F /etc/systemd/system/sigmaswap-bot.service /etc/systemd/system/sigmaswap-bot.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now sigmaswap-bot.timer
-```
 
-**GATES**
-
-```bash
 sudo systemctl start sigmaswap-bot.service; systemctl status sigmaswap-bot.service --no-pager | head -8
-#   "Deactivated successfully" / status=0/SUCCESS (it exits at once when there is nothing to do)
+#   status=0/SUCCESS (it exits at once when there is nothing to do)
 systemctl list-timers sigmaswap-bot.timer --no-pager          # next run within a minute
 sudo journalctl -u sigmaswap-bot.service -n 20 --no-pager     # "filled order ..." lines appear here
 ```
 
-- It runs as `apache` with the same settings file, so it needs nothing new. `ORDER_BOT=0` in the
-  env file makes every run exit immediately; `sudo systemctl disable --now sigmaswap-bot.timer`
-  removes it.
-- If the status shows `203/EXEC` or "Permission denied", SELinux is refusing to start the venv's
-  python from systemd: `sudo ausearch -m avc -ts recent | grep sigmaswap`, and check
-  `ls -Z venv/bin/python` is `httpd_sys_script_exec_t` (step 5) or relabel the venv `bin_t`.
-- It broadcasts through the explorer's submit endpoint (same host as all other chain reads).
+It runs as `www-data` with the same settings file. `ORDER_BOT=0` in the settings file makes every
+run exit immediately; `sudo systemctl disable --now sigmaswap-bot.timer` removes it.
 
-## Notifications
-
-All four apps tell the wallet where to ask for news (`api.pl?action=notify`). The wallet sends a
-random installation id with each request; what that installation started is kept in `watch/` in the
-cache directory. Nothing to install. Whether and how often the wallet asks is up to the wallet app.
-
-## SigmaLP (`sigmalp/`) and SigmaBridge (`sigmabridge/`)
-
-Two more apps in the same checkout, at `/apps/sigmaswap/sigmalp/` and `/apps/sigmaswap/sigmabridge/`.
-No new packages, Apache or SELinux steps; `redeploy.sh` covers them.
+## Updating
 
 ```bash
-ls -Z sigmalp/api.pl sigmabridge/api.pl                                              # httpd_sys_script_exec_t
-curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmalp/api.pl    | head -c 60; echo   # {"manifest":{"appName":"SigmaLP"...
-curl -sS https://public.aap.cornell.edu/apps/sigmaswap/sigmabridge/api.pl | head -c 60; echo  # {"manifest":{"appName":"SigmaBridge"...
+cd /usr/lib/cgi-bin/sigmaswap && sudo git pull && sudo ./redeploy.sh
 ```
 
-**SigmaBridge and Rosen upgrades.** The Rosen lock address and fee-table token are built into
-`sigmaswap.py` (`ROSEN_LOCK_ADDRESS`, `ROSEN_MINFEE_NFT`). When Rosen upgrades its contracts these
-change. The app then refuses to bridge by itself ("The bridge is unavailable right now") because it
-requires recent activity at the lock address and a readable fee table. To switch to the new values
-before a code update, set `ROSEN_LOCK_ADDRESS` / `ROSEN_MINFEE_NFT` in the env file, taking them ONLY
-from Rosen's own release file. `sigmabridge/tokens.json` (which tokens go to which chains) is
-refreshed with `tools/fetch_bridge_tokens.py`.
+If `requirements.txt` changed, also run `sudo venv/bin/python -m pip install -r requirements.txt`.
+If `deploy/sigmaswap.conf` changed, copy it again (step 5). If a Mosaik screen changed, the
+`APP_VERSION` in that app's `api.pl` was bumped, and wallets that have the app open reload it.
 
 ## Before going public
 
-These are deployment-side protections the code cannot provide for itself.
-
-1. **The cache directory must not be served.** It holds `mint-secret`, upload counters, transaction
-   notes and notification lists. Both of these must NOT return the file (expect 403 or 404):
-
-   ```bash
-   curl -sS -o /dev/null -w '%{http_code}\n' https://public.aap.cornell.edu/apps/uploads/sigmaswap/mint-secret
-   curl -sS -o /dev/null -w '%{http_code}\n' https://public.aap.cornell.edu/apps/sigmaswap/uploads/mint-secret
-   ```
-
-   If either returns 200, move the cache out of the served tree: create a directory such as
-   `/data/AAP_Storage/cache/sigmaswap` (owner `apache`, mode `2770`), add the
-   `httpd_sys_rw_content_t` rule for it, set `CACHE_DIR` to it, delete the old `mint-secret`.
-
-2. **Rate limiting.** The apps have no login, and every request starts a Python process and makes
+1. **Rate limiting.** There is no login, and every request starts a Python process and makes
    several calls to the Ergo explorer. Nothing in the code limits how often one visitor may do
-   that. Put a per-address request limit on `/apps/sigmaswap` in Apache before publicising the
-   links, for example with `mod_qos` or `mod_evasive` (a few requests per second per address is
-   far more than a real wallet needs).
+   that. Put a per-address limit on `/cgi-bin/sigmaswap` first, for example
+   `sudo apt install libapache2-mod-evasive` (or `libapache2-mod-qos`), or a rate-limiting rule at
+   your CDN. A few requests per second per address is far more than a real wallet needs.
+2. **The cache directory must stay outside anything Apache serves.** It holds `mint-secret` (the
+   key that signs upload sessions), upload counters, transaction notes and notification lists.
+   `/var/lib/sigmaswap` is correct; never point `CACHE_DIR` into `/usr/lib/cgi-bin` or `/var/www`.
+3. **The settings file** holds the Lighthouse key: `640 root:www-data` (`redeploy.sh` sets it).
+4. **Lighthouse uploads use your account.** The limits and the kill switch (`MINT_UPLOADS=0`) are
+   in `sigmaswap.env.example`.
 
-3. **Set `BASE_URL`** in the env file if the apps are served under one public host name.
+## Notes on the individual apps
 
-4. **Keep internal documentation out of the repository.** Server conventions and other internal
-   notes do not belong in a public repo; `.gitignore` excludes `CLAUDE.md` for that reason.
+**SigmaMint.** The server relays files chosen in the "Choose file" step to Lighthouse, so it needs
+outbound HTTPS to `upload.lighthouse.storage`. `curl -sS -F action=config $H/sigmamint/api.pl`
+answering `{"success":1,"uploads":0,"max_mb":10}` is correct: uploading only works from a session
+started in the wallet. The real test is in the wallet: Mint an NFT → Choose file → small picture →
+"File added" → back in the wallet, Preview shows the picture. Files are spooled to `tmp/` in the
+cache directory while they are checked and relayed, then deleted.
 
-## Token logos
+**SigmaBridge.** The Rosen lock address and fee-table token are built into `sigmaswap.py`. When
+Rosen upgrades its contracts the app refuses to bridge by itself ("The bridge is unavailable right
+now"), because it requires recent activity at the lock address and a readable fee table. To
+switch before a code update, set `ROSEN_LOCK_ADDRESS` / `ROSEN_MINFEE_NFT` in the settings file,
+taking the values ONLY from Rosen's own release file. `sigmabridge/tokens.json` is refreshed with
+`tools/fetch_bridge_tokens.py`.
 
-The logos in `icons/` are ordinary files in the repository; a `git pull` brings new ones. To add
-logos for newly listed tokens, run `python3 tools/fetch_icons.py` on a development machine (it
-needs node + playwright, which the web server does not have), commit `icons/`, and deploy as usual.
-A token without a logo shows a placeholder; nothing breaks.
+**Notifications.** All four apps tell the wallet where to ask for news (`api.pl?action=notify`).
+What an installation started is kept in `watch/` in the cache directory. Nothing to install.
 
-`deploy/sigmaswap.conf` now also blocks `tools/` from being served. Copy it over once
-(`sudo cp deploy/sigmaswap.conf /etc/httpd/conf.d/ && sudo httpd -t && sudo systemctl reload httpd`).
-Skipping this is harmless: the tool scripts contain nothing sensitive.
+**Token logos.** `icons/` are ordinary files in the repository. To add logos for newly listed
+tokens run `python3 tools/fetch_icons.py` on a development machine (needs node + playwright),
+commit, and update as usual. A token without a logo shows a placeholder.
 
 ## Troubleshooting
 
-Always read **`/var/log/httpd/ssl_error_log`** (not `error_log`). Lines from this app start with
-`sigmaswap:` or `sigmaswap.py`.
+Read **`/var/log/apache2/error.log`** first (or the vhost's own `ErrorLog` if it sets one).
 
 ```
-Browser/wallet gets a Cornell login page
-  -> Shibboleth still applies to /apps/sigmaswap: add the <Location> block from step 6.
+index.html gives 500 "Exec format error" / "End of script output before headers: index.html"
+  -> Apache is trying to run the page: deploy/sigmaswap.conf is not active.
+     step 5, then: sudo apache2ctl -S | head ; ls /etc/apache2/conf-enabled/sigmaswap.conf
 
-403 on everything, or api.pl is downloaded as text
-  -> ls -Z api.pl is not httpd_sys_script_exec_t: step 5 rules missing -> apply, sudo ./redeploy.sh
-  -> still 403: sudo setenforce 0; retry; sudo setenforce 1
-       works with 0  -> SELinux (sudo ausearch -m avc -ts recent | grep -i httpd)
-       still fails   -> DAC: namei -l /data/AAP_Storage/apps/sigmaswap/api.pl (a parent dir lacks o+x)
+api.pl is shown or downloaded as text
+  -> mod_cgid/mod_cgi is not loaded: sudo a2enmod cgid && sudo systemctl restart apache2
 
-500 "End of script output before headers"
-  -> perl -c api.pl                         (syntax / missing module -> step 1)
-  -> head -1 api.pl | od -c | head -2       (\r \n = CRLF shebang -> sudo ./redeploy.sh fixes it)
-  -> 500 right after a pull/edit            -> sudo ./redeploy.sh
+404 on everything under /cgi-bin/sigmaswap/
+  -> this virtual host has no ScriptAlias for /cgi-bin/: sudo a2enconf serve-cgi-bin, or add
+     "ScriptAlias /cgi-bin/ /usr/lib/cgi-bin/" to the HTTPS virtual host.
 
-health says "The service is temporarily unavailable." / "... is busy"
-  ssl_error_log shows the reason:
-  -> "Permission denied" starting venv/bin/python, or an ImportError / "cannot open shared object"
-       venv label is wrong: ls -dZ venv ; ls -Z venv/lib/python3*/site-packages/ergo_lib_python/*.so
-       -> step 5 venv rule, then sudo ./redeploy.sh
-  -> "No such file or directory" for venv/bin/python -> step 3 was skipped
-  -> avc denied { name_connect } / URLError / timed out
-       -> sudo setsebool -P httpd_can_network_connect 1 ; then G2 (host firewall / egress rules)
-  -> works as root but not via Apache:
-       sudo -u apache env APP_ENV_FILE=/data/AAP_Storage/secrets/sigmaswap.env \
-            REQUEST_METHOD=GET QUERY_STRING= perl api.pl | head -c 300
-       prints JSON  -> SELinux/label problem (the command above bypasses SELinux)
-       prints error -> code/config problem
+403 on api.pl
+  -> sudo ./redeploy.sh (api.pl must be executable); error.log names the reason.
 
-App opens but "The pool list is unavailable right now"
-  -> G2 for api.ergodex.io. A previously cached list keeps being used while ErgoDex is down;
-     on a brand-new install there is no cache yet.
+500 on api.pl
+  -> perl -c api.pl                      (syntax / missing module -> step 1)
+  -> head -1 api.pl | od -c | head -2    (\r \n = Windows line ending -> sudo ./redeploy.sh)
+  -> run it as the web server does:
+       sudo -u www-data env APP_ENV_FILE=/etc/sigmaswap/sigmaswap.env \
+            REQUEST_METHOD=GET QUERY_STRING=action=health perl api.pl
 
-Status screen always says "Waiting for your wallet"
-  -> the app cannot write CACHE_DIR/tx/: same fix as the next entry (cache dir + SELinux rule).
+health says "The service is temporarily unavailable." / "... is busy"   (reason is in error.log)
+  -> "No such file or directory" for venv/bin/python, or ImportError -> step 3
+  -> URLError / timed out -> the server cannot reach the internet over HTTPS:
+       curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://api.ergoplatform.com/api/v1/info
+       curl -sS -m 15 -o /dev/null -w '%{http_code}\n' https://api.ergodex.io/v1/amm/pools/stats
 
-pools.json never appears (G5)
-  -> cache dir missing or not apache-writable / not httpd_sys_rw_content_t: step 4 + step 5.
-     The app still works without it, only slower.
+health works but base_url starts with http:// or shows the wrong host
+  -> set BASE_URL in the settings file (step 4).
+
+Wallet says the app cannot be loaded, but C2 works
+  -> the address entered in the wallet must be https and end in /cgi-bin/sigmaswap/ ; the
+     certificate must be valid for the host name (the wallet does not accept self-signed ones).
+
+"The pool list is unavailable right now"
+  -> api.ergodex.io unreachable (see above). A cached list keeps being used while it is down; a
+     brand-new install has no cache yet.
+
+Status screen always says "Waiting for your wallet" / pools.json never appears
+  -> the web server cannot write CACHE_DIR: step 4 (owner www-data), and CACHE_DIR spelled right.
+
+SigmaMint: "Uploads are not available right now"
+  -> error.log "Lighthouse upload refused: HTTP 401/403" = wrong or revoked API key.
+SigmaMint: picker page says "This page has expired" straight away
+  -> key missing/empty, MINT_UPLOADS=0, or the cache directory is not writable.
+SigmaMint: "Too many uploads right now"
+  -> a limit was hit (per visitor per hour, or per day). Raise it in the settings file if intended.
+
+Bot: status 203/EXEC -> venv missing (step 3). Wrong user -> edit User=/Group= in the unit.
 
 Wallet shows "The pool did not accept this swap" / "price moved beyond your slippage tolerance"
   -> normal protection: the pool changed between preview and signing. Preview again.
 
 Order placed but not executed after several minutes
-  -> the pool price is below the order's minimum, or the ErgoDex bots are not running. The funds
-     are safe in the order box: "My open orders" -> "Cancel and refund" returns them.
+  -> the pool price is below the order's minimum. The funds are safe in the order box:
+     "My open orders" -> "Cancel and refund" returns them.
   -> "My open orders" is empty right after placing an order: the explorer lists it once the
-     transaction has confirmed (about 2 minutes), and removes it once it is executed.
+     transaction has confirmed (about 2 minutes).
 
 Wallet: transaction rejected after signing ("double spending" / "inputs not found")
   -> somebody else's swap hit the same pool box first, or the wallet's previous transaction is
      still unconfirmed. Nothing was spent. Wait for the next block and preview again.
 ```
+
+## Appendix: RHEL family (Oracle / Rocky / Alma) with SELinux
+
+The web user is `apache`, the service is `httpd`, includes go in `/etc/httpd/conf.d/`, the log is
+`/var/log/httpd/ssl_error_log`, and the packages are `httpd perl perl-CGI python3 git
+policycoreutils-python-utils`. Change the paths in `deploy/sigmaswap.conf` and the bot unit if you
+install somewhere other than `/usr/lib/cgi-bin/sigmaswap`, and set `User=apache` in the unit.
+With SELinux enforcing, install these rules once, then run `redeploy.sh` (it relabels and checks):
+
+```bash
+A=/usr/lib/cgi-bin/sigmaswap
+sudo semanage fcontext -a -t httpd_sys_content_t     "$A(/.*)?"
+sudo semanage fcontext -a -t httpd_sys_script_exec_t "$A(/.*)?/api\.pl"
+sudo semanage fcontext -a -t httpd_sys_script_exec_t "$A/venv(/.*)?"
+sudo semanage fcontext -a -t httpd_sys_content_t     "/etc/sigmaswap(/.*)?"
+sudo semanage fcontext -a -t httpd_sys_rw_content_t  "/var/lib/sigmaswap(/.*)?"
+sudo setsebool -P httpd_can_network_connect 1
+sudo restorecon -RF /etc/sigmaswap /var/lib/sigmaswap
+```
+
+Denials show with `sudo ausearch -m avc -ts recent | grep -i httpd`.

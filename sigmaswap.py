@@ -8,7 +8,7 @@ Called by api.pl (never directly by a browser/wallet):
 One JSON request on stdin, one JSON response on stdout:
     {"ok": true, ...}  or  {"ok": false, "error": "message safe to show the user"}
 
-Details of unexpected failures go to stderr (-> Apache ssl_error_log) only.
+Details of unexpected failures go to stderr (-> the web server error log) only.
 
 What it does
   pools  - list the liquid ErgoDex pools (from the ErgoDex analytics API)
@@ -1987,7 +1987,7 @@ def cmd_status(req):
 # ------------------------------------------------------------------ main ----
 
 def cmd_health(req):
-    """Deploy gate: proves python + ergo-lib-python load under Apache/SELinux."""
+    """Deploy gate: proves python + ergo-lib-python load under the web server."""
     import ergo_lib_python
     res = {"python": "%d.%d.%d" % sys.version_info[:3], "ergo_lib": ergo_lib_python.__version__}
     if req.get("network"):

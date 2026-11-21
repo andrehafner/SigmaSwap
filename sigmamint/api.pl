@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # SigmaMint - mint Ergo tokens and NFTs (EIP-4) from the Ergo wallet or a browser.
 # Lives in a subdirectory of SigmaSwap and shares its config file, Python helper
-# and virtualenv:   https://<host>/apps/sigmaswap/sigmamint/
+# and virtualenv:   https://<host>/cgi-bin/sigmaswap/sigmamint/
 #
 #   Mosaik (inside the Ergo wallet)
 #     GET  api.pl                          -> start screen: "Mint a token" / "Mint an NFT"

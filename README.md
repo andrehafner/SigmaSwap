@@ -6,10 +6,10 @@ the app prepares a transaction, and your wallet shows it and signs it.
 
 | App | What it does | Open in the wallet's dApps section |
 |---|---|---|
-| **SigmaSwap** | Swap ERG and tokens on the ErgoDEX liquidity pools: direct swaps, orders, and limit orders at a price you set | `https://public.aap.cornell.edu/apps/sigmaswap/` |
-| **SigmaLP** | Add and remove liquidity on the same pools | `https://public.aap.cornell.edu/apps/sigmaswap/sigmalp/` |
-| **SigmaMint** | Mint your own token or NFT | `https://public.aap.cornell.edu/apps/sigmaswap/sigmamint/` |
-| **SigmaBridge** | Send ERG and tokens from Ergo to other chains over the Rosen bridge | `https://public.aap.cornell.edu/apps/sigmaswap/sigmabridge/` |
+| **SigmaSwap** | Swap ERG and tokens on the ErgoDEX liquidity pools: direct swaps, orders, and limit orders at a price you set | `https://my.ergoport.dev/cgi-bin/sigmaswap/` |
+| **SigmaLP** | Add and remove liquidity on the same pools | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalp/` |
+| **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
+| **SigmaBridge** | Send ERG and tokens from Ergo to other chains over the Rosen bridge | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -24,7 +24,7 @@ address in a browser shows a short description page.
 - Start with small amounts.
 - There is no warranty of any kind, and the authors accept no liability for losses.
 - It is an independent project. It is not affiliated with or endorsed by ErgoDEX, the Rosen bridge,
-  Lighthouse or the Ergo Platform, and it is not an official service of the institution that hosts it.
+  Lighthouse or the Ergo Platform.
 
 ### Always read what your wallet shows you
 
@@ -69,8 +69,8 @@ Pool data comes from the ErgoDEX analytics API and the public Ergo explorer.
 ## Running your own copy
 
 It is a set of Perl CGI scripts with one Python helper (using
-[ergo-lib-python](https://pypi.org/project/ergo-lib-python/)), written for Apache on Oracle Linux 9
-with SELinux enforcing. There is no build step.
+[ergo-lib-python](https://pypi.org/project/ergo-lib-python/)), served by Apache from
+`/usr/lib/cgi-bin` on Debian or Ubuntu. There is no build step and no database.
 
 | Path | Purpose |
 |---|---|

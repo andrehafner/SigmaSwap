@@ -1,14 +1,15 @@
 #!/bin/bash
-# Re-apply owner / permissions / SELinux labels for SigmaSwap.
-# Run after EVERY write to the app tree (git pull, edit, pip install):
+# Re-apply owner and permissions for the SigmaSwap apps. Run after every change to
+# the app directory (git pull, edit, pip install):
 #
-#     cd /data/AAP_Storage/apps/sigmaswap && sudo ./redeploy.sh
+#     cd /usr/lib/cgi-bin/sigmaswap && sudo ./redeploy.sh
 #
-# Idempotent. Does NOT touch the external cache dir (CACHE_DIR).
+# Idempotent. It never touches the settings file's contents or the cache directory's
+# contents. On a server with SELinux enforcing it also restores the file labels.
 set -u
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SECRET=/data/AAP_Storage/secrets/sigmaswap.env
+ENV_FILE="${APP_ENV_FILE:-/etc/sigmaswap/sigmaswap.env}"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: run with sudo" >&2
@@ -16,64 +17,58 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 cd "$APP_DIR" || exit 1
 
-# LF line endings (a CRLF shebang = "exec ... No such file or directory")
+# the user the web server runs CGI programs as
+if   id -u www-data >/dev/null 2>&1; then WEB=www-data
+elif id -u apache   >/dev/null 2>&1; then WEB=apache
+else echo "ERROR: no www-data or apache user found" >&2; exit 1
+fi
+
+# LF line endings (a CRLF first line makes the web server fail to start the script)
 sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh ./sigmamint/*.pl ./sigmalp/*.pl ./sigmabridge/*.pl 2>/dev/null
 
-# Ownership + DAC permissions: root owns, nothing in the tree is apache-writable.
-# The tree is world-readable on purpose (755/644): it holds no secrets (those would
-# live in the env file outside the tree), and admins can then cd/ls/git without sudo.
-chown -R root:apache "$APP_DIR"
+# root owns everything and nothing here is writable by the web server. The tree holds
+# no secrets (those are in the settings file), so it is world-readable: 755 / 644.
+chown -R root:"$WEB" "$APP_DIR"
 find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -type d -exec chmod 755 {} +
 find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -path "$APP_DIR/venv" -prune -o -type f -exec chmod 644 {} +
 chmod 755 "$APP_DIR"/*.pl "$APP_DIR"/sigmamint/*.pl "$APP_DIR"/sigmalp/*.pl "$APP_DIR"/sigmabridge/*.pl "$APP_DIR"/redeploy.sh
-if [ -d "$APP_DIR/.git" ]; then
-    chmod -R a+rX "$APP_DIR/.git"
-fi
-if [ -d "$APP_DIR/venv" ]; then
-    chmod -R a+rX "$APP_DIR/venv"
+[ -d "$APP_DIR/.git" ] && chmod -R a+rX "$APP_DIR/.git"
+[ -d "$APP_DIR/venv" ] && chmod -R a+rX "$APP_DIR/venv"
+
+# the settings file: readable by the web server, by nobody else
+if [ -f "$ENV_FILE" ]; then
+    chown root:"$WEB" "$ENV_FILE"
+    chmod 640 "$ENV_FILE"
 fi
 
-# SELinux labels (only applies rules that the one-time `semanage fcontext` step installed)
-restorecon -RF "$APP_DIR"
-[ -f "$SECRET" ] && restorecon -F "$SECRET"
-
-# ---- verification: restorecon says nothing when the fcontext rules are missing
 fail=0
-label_of() { stat -c %C "$1" 2>/dev/null; }
-check() {   # check <path> <expected type> <what>
-    local l; l="$(label_of "$1")"
-    case "$l" in
-        *":$2:"*) echo "  ok    $3 -> $l" ;;
-        *) echo "  WRONG $3 -> ${l:-missing} (expected $2)"; fail=1 ;;
-    esac
-}
-echo "SELinux labels:"
-check "$APP_DIR/api.pl"       httpd_sys_script_exec_t "api.pl"
-check "$APP_DIR/sigmamint/api.pl" httpd_sys_script_exec_t "sigmamint/api.pl"
-check "$APP_DIR/sigmalp/api.pl"   httpd_sys_script_exec_t "sigmalp/api.pl"
-check "$APP_DIR/sigmabridge/api.pl" httpd_sys_script_exec_t "sigmabridge/api.pl"
-check "$APP_DIR/index.html"   httpd_sys_content_t     "index.html"
-check "$APP_DIR/sigmaswap.py" httpd_sys_content_t     "sigmaswap.py"
-if [ -d "$APP_DIR/venv" ]; then
-    check "$APP_DIR/venv" httpd_sys_script_exec_t "venv/"
+echo "Web user: $WEB"
+for f in api.pl sigmamint/api.pl sigmalp/api.pl sigmabridge/api.pl; do
+    if [ -x "$APP_DIR/$f" ] && head -1 "$APP_DIR/$f" | grep -q '^#!/usr/bin/perl'; then echo "  ok    $f"
+    else echo "  WRONG $f (missing, not executable, or bad first line)"; fail=1; fi
+done
+if [ -x "$APP_DIR/venv/bin/python" ]; then
+    if "$APP_DIR/venv/bin/python" -I -c 'import ergo_lib_python' 2>/dev/null; then echo "  ok    venv (ergo-lib-python loads)"
+    else echo "  WRONG venv exists but ergo-lib-python does not load: venv/bin/python -m pip install -r requirements.txt"; fail=1; fi
 else
-    echo "  WARN  venv/ does not exist yet - create it (DEPLOY.md step 3) and re-run"
-    fail=1
+    echo "  WRONG venv/ is missing: python3 -m venv venv && venv/bin/python -m pip install -r requirements.txt"; fail=1
 fi
-if [ -f "$SECRET" ]; then
-    check "$SECRET" httpd_sys_content_t "secrets/sigmaswap.env"
-else
-    echo "  note  $SECRET not present (optional: defaults are used)"
+if [ -f "$ENV_FILE" ]; then echo "  ok    settings file $ENV_FILE"
+else echo "  note  $ENV_FILE not present: defaults are used (see DEPLOY.md step 4)"; fi
+
+# SELinux servers only (RHEL family): labels follow the rules installed with semanage
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = "Enforcing" ]; then
+    restorecon -RF "$APP_DIR"
+    [ -f "$ENV_FILE" ] && restorecon -F "$ENV_FILE"
+    case "$(stat -c %C "$APP_DIR/api.pl" 2>/dev/null)" in
+        *":httpd_sys_script_exec_t:"*) echo "  ok    SELinux label on api.pl" ;;
+        *) echo "  WRONG SELinux label on api.pl (see DEPLOY.md, SELinux appendix)"; fail=1 ;;
+    esac
 fi
 
 if [ "$fail" -ne 0 ]; then
-    cat >&2 <<'MSG'
-
-!!! NOT DONE. One or more labels are wrong, so httpd will answer 403/500.
-!!! The one-time `semanage fcontext` rules are missing (DEPLOY.md step 5),
-!!! or semanage is not installed (dnf install policycoreutils-python-utils).
-!!! Apply the rules, then run this script again.
-MSG
+    echo >&2
+    echo "!!! NOT DONE. Fix the lines marked WRONG, then run this script again." >&2
     exit 1
 fi
 echo "Done."

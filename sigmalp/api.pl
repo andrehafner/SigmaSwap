@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # SigmaLP - add and remove liquidity on the ErgoDex pools, from the Ergo wallet.
 # A subdirectory app of SigmaSwap (shared config, helper, venv, cache):
-#   https://<host>/apps/sigmaswap/sigmalp/
+#   https://<host>/cgi-bin/sigmaswap/sigmalp/
 #
 #   Mosaik
 #     GET  api.pl                    -> start screen: "Add liquidity" / "Your positions"
