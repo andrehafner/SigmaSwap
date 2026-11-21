@@ -37,7 +37,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 8;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 9;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -162,6 +162,7 @@ sub clean_state {
         my $a = $v->{ 'amount_' . $reg->{tokens}{ $s{from} }{decimals} };
         $s{amount} = "$a" if defined $a && !ref $a && "$a" =~ /^[1-9]\d{0,18}\z/;
     }
+    $s{sort} = (defined $v->{sort} && !ref $v->{sort} && $v->{sort} eq 'az') ? 'az' : 'liq';
     my %slip = SLIPPAGE;
     my $sl   = $v->{slippage};
     $s{slippage} = (defined $sl && !ref $sl && exists $slip{$sl}) ? $sl : 100;
@@ -169,7 +170,7 @@ sub clean_state {
         my $p = $v->{price_9};
         $s{price} = "$p" if defined $p && !ref $p && "$p" =~ /^[1-9]\d{0,18}\z/;
     }
-    if ($MODE eq 'order') {    # orders exist for ERG pairs only
+    if ($MODE eq 'order' && exists $reg->{tokens}{ +ERG }) {    # orders exist for ERG pairs only
         my $erg = ERG;
         $s{from} = $erg unless defined $s{from} && ($s{from} eq $erg || $reg->{pair}{ $s{from} }{$erg});
         if    ($s{from} ne $erg)                                       { $s{to} = $erg }
@@ -182,10 +183,52 @@ sub clean_state {
 # ============================================================ Mosaik views ==
 
 
+# ERG locked in a pool, in nanoERG. ERG pools report it; for a token-token pool it is
+# estimated from the pool's value (half of it is one side) and marked with "about".
+sub erg_price {    # USD per ERG, from the deepest ERG pool
+    my ($reg) = @_;
+    return $reg->{erg_usd} if exists $reg->{erg_usd};
+    my ($best) = sort { $b->{tvl} <=> $a->{tvl} } grep { $_->{erg} } values %{ $reg->{pair}{ +ERG } || {} };
+    return $reg->{erg_usd} = $best ? $best->{tvl} / 2 / ($best->{erg} / 1e9) : 0;
+}
+sub pool_erg {    # -> (nanoERG, is_estimate) or ()
+    my ($reg, $p) = @_;
+    return ($p->{erg}, 0) if $p && $p->{erg};
+    my $usd = erg_price($reg);
+    return ($p->{tvl} / 2 / $usd * 1e9, 1) if $p && $usd > 0;
+    return ();
+}
+sub fmt_liq {    # "12,340 ERG" / "~ 85 ERG"
+    my ($nano, $est) = @_;
+    my $erg = $nano / 1e9;
+    my $n = $erg >= 100 ? sprintf('%.0f', $erg) : $erg >= 1 ? sprintf('%.1f', $erg) : sprintf('%.2f', $erg);
+    1 while $n =~ s/^(\d+)(\d{3})/$1,$2/;
+    return ($est ? "\x{2248} " : '') . "$n ERG";
+}
+# The pool a token is judged by: the one with the chosen other token, else its ERG
+# pool, else its deepest pool.
+sub token_pool {
+    my ($reg, $id, $other) = @_;
+    my $pairs = $reg->{pair}{$id} or return undef;
+    return $pairs->{$other} if defined $other;
+    return $pairs->{ +ERG } if $pairs->{ +ERG };
+    my ($best) = sort { $b->{tvl} <=> $a->{tvl} } values %$pairs;
+    return $best;
+}
 sub token_dropdown {
-    my ($id, $reg, $ids, $value, $placeholder) = @_;
+    my ($id, $reg, $ids, $value, $placeholder, $sort, $other) = @_;
+    my (%liq, %label);
+    for my $t (@$ids) {
+        my $name = $reg->{tokens}{$t}{label};
+        my ($nano, $est) = ($t eq ERG && !defined $other) ? () : pool_erg($reg, token_pool($reg, $t, $other));
+        $liq{$t}   = $nano // 9e99;      # ERG itself (no single pool) stays first
+        $label{$t} = defined $nano ? "$name  \x{00B7}  " . fmt_liq($nano, $est) : $name;
+    }
+    my @sorted = $sort eq 'az'
+        ? sort { ($b eq ERG) <=> ($a eq ERG) || lc $reg->{tokens}{$a}{label} cmp lc $reg->{tokens}{$b}{label} || $a cmp $b } @$ids
+        : sort { ($b eq ERG) <=> ($a eq ERG) || $liq{$b} <=> $liq{$a} || $a cmp $b } @$ids;
     return O(type => 'DropDownList', id => $id, value => $value, onValueChanged => 'refresh',
-             placeholder => $placeholder, entries => O(map { $_ => $reg->{tokens}{$_}{label} } @$ids));
+             placeholder => $placeholder, entries => O(map { $_ => $label{$_} } @sorted));
 }
 
 sub quote_placeholder {    # what the quote area shows before / after a preview
@@ -301,12 +344,20 @@ sub main_view {
     my @from_ids = $order ? (grep { $_ eq $erg || $reg->{pair}{$_}{$erg} } @{ $reg->{order} }) : @{ $reg->{order} };
     my @to_ids   = !$from ? ()
                  : ($order && $from->{id} ne $erg) ? ($erg)
-                 : (sort { $reg->{pair}{ $from->{id} }{$b}{tvl} <=> $reg->{pair}{ $from->{id} }{$a}{tvl} || $a cmp $b }
-                         keys %{ $reg->{pair}{ $from->{id} } });
+                 : keys %{ $reg->{pair}{ $from->{id} } };
+    my $sort = $s->{sort} || 'liq';
     my %slip = SLIPPAGE;
     my @form = (
+        $SIMPLE ? () : (
+            child(label('Sort tokens by', 'BODY1BOLD'), align => 'START'),
+            child(O(type => 'DropDownList', id => 'sort', value => $sort, onValueChanged => 'refresh',
+                    entries => O(liq => 'Most liquidity first', az => 'Name (A to Z)')), align => 'JUSTIFY'),
+            child(label('The amount next to each token is the ERG held in its pool. A small pool means a worse '
+                        . 'price, and a copy of a well-known token usually has a small pool.',
+                        'BODY2', color => 'SECONDARY'), align => 'START'),
+        ),
         child(label('You pay', 'BODY1BOLD'), align => 'START'),
-        child(token_dropdown('from', $reg, \@from_ids, $s->{from}, 'Select token'), align => 'JUSTIFY'),
+        child(token_dropdown('from', $reg, \@from_ids, $s->{from}, 'Select token', $sort), align => 'JUSTIFY'),
     );
     if ($from) {
         push @form, child(O(
@@ -322,7 +373,7 @@ sub main_view {
     push @form,
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
         child(label('You receive', 'BODY1BOLD'), align => 'START'),
-        child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token'), align => 'JUSTIFY');
+        child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token', $sort, $from ? $from->{id} : undef), align => 'JUSTIFY');
     if ($LIMIT && $from && defined $s->{to}) {
         my $to = $tok->{ $s->{to} };
         push @form, child(label('Your price', 'BODY1BOLD'), align => 'START');

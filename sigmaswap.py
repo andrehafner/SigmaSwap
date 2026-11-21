@@ -168,6 +168,8 @@ def cmd_pools(req):
                 "x": _asset(x),
                 "y": _asset(y),
             }
+            if x["id"] == ERG_ID:      # ERG locked in the pool, shown next to the token name
+                entry["erg"] = int(x["amount"])
         except (KeyError, TypeError, ValueError):
             continue
         key = tuple(sorted((x["id"], y["id"])))
