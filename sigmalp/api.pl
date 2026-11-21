@@ -25,7 +25,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 2;
+use constant APP_VERSION => 3;
 use constant ERG         => '0' x 64;
 use constant TOLERANCE   => 100;     # basis points the pool may move between preview and signing
 
@@ -35,7 +35,7 @@ $CGI::DISABLE_UPLOADS = 1;
 my $cgi = CGI->new;
 print $cgi->header(-type => 'application/json', -charset => 'utf-8', -cache_control => 'no-store');
 
-my $BASE = base_url();
+my $BASE = base_url('sigmalp');
 my $API  = "$BASE/api.pl";
 
 my $action = $cgi->url_param('action');

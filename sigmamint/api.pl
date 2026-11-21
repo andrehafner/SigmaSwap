@@ -35,7 +35,7 @@ use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 use Unicode::Normalize qw(NFKC);
 
-use constant APP_VERSION => 4;
+use constant APP_VERSION => 5;
 use constant ERG         => '0' x 64;
 
 my $MAX_MB = cfg('MINT_MAX_UPLOAD_MB', 10) + 0;
@@ -55,7 +55,7 @@ if (my $cd = cache_dir()) {
 my $cgi = CGI->new;
 print $cgi->header(-type => 'application/json', -charset => 'utf-8', -cache_control => 'no-store');
 
-my $BASE = base_url();
+my $BASE = base_url('sigmamint');
 my $API  = "$BASE/api.pl";
 
 my $action = $cgi->url_param('action');

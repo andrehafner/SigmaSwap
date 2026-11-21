@@ -28,7 +28,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 4;
+use constant APP_VERSION => 5;
 use constant CHAINS      => (cardano => 'Cardano', ethereum => 'Ethereum', binance => 'BNB Chain', 'bitcoin-runes' => 'Bitcoin Runes',
                             bitcoin => 'Bitcoin', doge => 'Dogecoin', firo => 'Firo');
 use constant CHAIN_ORDER => qw(cardano ethereum binance bitcoin-runes bitcoin doge firo);    # same order as the Rosen app
@@ -39,7 +39,7 @@ $CGI::DISABLE_UPLOADS = 1;
 my $cgi = CGI->new;
 print $cgi->header(-type => 'application/json', -charset => 'utf-8', -cache_control => 'no-store');
 
-my $BASE = base_url();
+my $BASE = base_url('sigmabridge');
 my $API  = "$BASE/api.pl";
 
 my $action = $cgi->url_param('action');

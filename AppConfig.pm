@@ -52,10 +52,16 @@ sub cfg {
 }
 
 # Public base URL of the app directory, e.g. https://my.ergoport.dev/cgi-bin/sigmaswap
-# Derived from the request so the same checkout serves either vhost; BASE_URL overrides it.
+# Derived from the request unless BASE_URL is set. BASE_URL always names the MAIN app
+# directory; a sub-app passes its own directory name (base_url('sigmamint')) so its
+# links, icon and signing URLs point at itself and not at SigmaSwap.
 sub base_url {
+    my ($sub) = @_;
     my $base = cfg('BASE_URL');
-    if (!$base) {
+    if ($base) {
+        $base =~ s{/+$}{};
+        $base .= "/$sub" if defined $sub && $sub =~ /^[a-z]+$/;
+    } else {
         my $host = $ENV{HTTP_HOST} || $ENV{SERVER_NAME} || 'localhost';
         $host = 'localhost' unless $host =~ /^[A-Za-z0-9.\-]+(:\d{1,5})?$/;
         my $https = (($ENV{HTTPS} || '') =~ /^(on|1)$/i) || (($ENV{HTTP_X_FORWARDED_PROTO} || '') eq 'https');
