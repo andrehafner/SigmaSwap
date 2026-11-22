@@ -23,6 +23,8 @@
 - **Routes through ERG** (SigmaSwap, direct screen): two tokens with no shared pool are swapped A → ERG → B with one
   signature. The first swap is direct; its ERG output is an ordinary ErgoDex order for B, owned by the user's key,
   which the bot completes. A pool must be output 0 of its transaction, so two pools cannot share one.
+  The preview also offers the same route as two direct swaps signed one after the other (no order, no bot):
+  the first swap's note records the target token and the status screen then offers the second swap.
 - **Order bot**: a systemd timer runs `sigmaswap.py bot` every minute. It completes orders placed
   through SigmaSwap when the pool can pay their minimum, by broadcasting a transaction that needs
   no key. This is the one place the server sends a transaction to the network itself.

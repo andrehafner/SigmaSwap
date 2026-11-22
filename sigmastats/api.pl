@@ -24,7 +24,7 @@ use POSIX qw(strftime);
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 1;
+use constant APP_VERSION => 2;
 use constant ERG         => '0' x 64;
 use constant SIGUSD      => '03faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf04';
 use constant MAX_ALERTS  => 10;
@@ -231,7 +231,7 @@ sub home_view {
 
     my @mkt;
     my $ep = erg_price($reg);
-    push @mkt, kv_row('ERG price', fmt_price($ep, ERG), style => 'HEADLINE2', color => 'PRIMARY') if $ep;
+    push @mkt, kv_row('ERG price (ErgoDex SigUSD pool)', fmt_price($ep, ERG), style => 'HEADLINE2', color => 'PRIMARY') if $ep;
     my (%seen, $tvl, $pools);
     for my $p (map { values %$_ } values %{ $reg->{pair} }) { next if $seen{ $p->{id} }++; $tvl += $p->{tvl}; $pools++ }
     push @mkt, kv_row('ErgoDex liquidity', '$' . commas(sprintf('%.0f', $tvl)) . " in $pools pools") if $pools;
@@ -242,7 +242,7 @@ sub home_view {
         push @mkt, kv_row($reg->{tokens}{$id}{label}, fmt_price($p, $id), style => 'BODY1');
         last if ++$shown >= 6;
     }
-    push @mkt, note('Prices are the ErgoDex pool prices. The ERG price is its SigUSD pool price, not an exchange quote.') if @mkt;
+    push @mkt, note('All prices here are ErgoDex pool prices. The ERG price is what the ERG / SigUSD pool on ErgoDex pays right now. It is not an exchange quote and can differ from one.') if @mkt;
     push @mkt, note('The pool list is unavailable right now.') unless @mkt;
 
     return column([
@@ -298,12 +298,12 @@ sub alerts_view {
     my $now    = asset_price($reg, $asset);
     my @form = (
         child(O(type => 'DropDownList', id => 'asset', value => $asset, onValueChanged => 'alerts',
-                entries => O(map { $_ => ($_ eq ERG ? 'ERG, priced in SigUSD' : $reg->{tokens}{$_}{label} . ', priced in ERG') } @assets)),
+                entries => O(map { $_ => ($_ eq ERG ? 'ERG, in SigUSD (ErgoDex pool)' : $reg->{tokens}{$_}{label} . ', priced in ERG') } @assets)),
               align => 'JUSTIFY'),
     );
     if ($now) {
         push @form,
-            child(label('Now: 1 ' . asset_name($reg, $asset) . " = " . fmt_price($now, $asset), 'BODY1', color => 'PRIMARY'), align => 'START'),
+            child(label('Now: 1 ' . asset_name($reg, $asset) . " = " . fmt_price($now, $asset) . ' (ErgoDex pool price)', 'BODY1', color => 'PRIMARY'), align => 'START'),
             child(O(type => 'DecimalInputField', id => 'price_9', placeholder => 'Tell me at this price (' . price_unit($asset) . ')',
                     onImeAction => 'alertset', imeActionType => 'DONE', minValue => N(1), scale => N(9)), align => 'JUSTIFY'),
             button('Set alert', 'alertset'),
@@ -363,7 +363,7 @@ sub act_portq {
 
     my $u = usd($total, $ep);
     my @sum = (kv_row('Total', "\x{2248} " . fmt_amount($total->bstr, 9, 4) . ' ERG', style => 'HEADLINE2', color => 'PRIMARY'));
-    push @sum, kv_row('In SigUSD', "\x{2248} $u") if defined $u;
+    push @sum, kv_row('In SigUSD (ErgoDex pool price)', "\x{2248} $u") if defined $u;
     push @sum, note('ERG plus the tokens that have an ERG pool on ErgoDex, at the pool price. Selling a large holding would '
                     . 'fetch less. Liquidity positions and open orders are not included.');
     my @rows = (kv_row('ERG', fmt_amount($erg->bstr, 9, 4)));

@@ -37,12 +37,15 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 10;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 11;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
 $CGI::POST_MAX        = 64 * 1024;
 $CGI::DISABLE_UPLOADS = 1;
+
+# set (with local) while a quote is built for embedding in a full screen, see act_hop2
+our ($CAPTURE, $NO_SHORT);
 
 my $cgi = CGI->new;
 # The JSON header MUST be the first thing printed.
@@ -81,6 +84,7 @@ my %actions = (
     'orders'  => \&act_orders,
     'home'    => \&act_home,
     'status'  => \&act_status,
+    'hop2'    => \&act_hop2,
     'ergopay' => \&act_ergopay,
     'pools'   => \&act_pools,
     'health'  => \&act_health,
@@ -97,7 +101,7 @@ elsif (exists $actions{$action}) {
         $err =~ s/\s+\z//;
         warn "sigmaswap: action '$action' failed: $err\n";     # detail to the log only
         if    ($action eq 'ergopay')                  { ergopay_error('Something went wrong. Please try again.') }
-        elsif ($action =~ /^(refresh|flip|quote|orders|home|status)\z/) { mosaik_dialog('Something went wrong. Please try again.') }
+        elsif ($action =~ /^(refresh|flip|quote|orders|home|status|hop2)\z/) { mosaik_dialog('Something went wrong. Please try again.') }
         else                                          { die_json('Something went wrong') }
     }
 }
@@ -544,6 +548,7 @@ sub act_status {
 
     my $rec = load_record($nonce);
     my $hop = $rec && $rec->{hop};
+    my $next = ($rec && ($rec->{next} // '') =~ /^[0-9a-f]{64}\z/) ? $reg->{tokens}{ $rec->{next} } : undef;
     if (!$rec) {
         return mosaik_replace(status_box("Waiting for your wallet", [
             "Your wallet has not picked up this $what yet. If you cancelled signing, nothing happened.",
@@ -559,11 +564,17 @@ sub act_status {
     my $age   = time - ($rec->{t} || time);
     my $state = $r->{state} // 'unknown';
     my ($title, @lines, @buttons);
+    my $step2;
+    if ($next) {
+        push @extra, O(type => 'BackendRequestAction', url => "$API?action=hop2&mode=direct&simple=$SIMPLE&n=$nonce", id => 'hop2', postValues => 'VALID');
+        $step2 = button('Step 2 of 2: swap ' . fmt_amount($rec->{out}, 9, 4) . " ERG for $next->{ticker}", 'hop2');
+    }
 
     if ($state eq 'confirmed') {
-        $title   = 'Swap complete';
+        $title   = $next ? 'Step 1 of 2 complete' : 'Swap complete';
         @lines   = ($summary, 'You received ' . describe_amount($reg, $rec->{to}, $rec->{out}) . '.');
-        @buttons = ($view, $new);
+        push @lines, "Now swap that ERG for $next->{ticker} to finish." if $next;
+        @buttons = ($next ? $step2 : (), $view, $new);
     }
     elsif ($state eq 'executed') {
         $title   = $hop ? 'Swap complete' : 'Order executed';
@@ -586,9 +597,10 @@ sub act_status {
         @buttons = ($view, $new);
     }
     elsif ($state eq 'pending') {
-        $title   = ($MODE eq 'order' && !$hop) ? 'Order submitted' : 'Swap submitted';
+        $title   = ($MODE eq 'order' && !$hop) ? 'Order submitted' : $next ? 'Step 1 of 2 submitted' : 'Swap submitted';
         @lines   = ($summary, 'Waiting for the next block (about two minutes).');
-        @buttons = ($again, $view, $new);
+        push @lines, 'You can sign step 2 now, without waiting. If step 1 fails after all, step 2 fails with it and nothing is spent.' if $next;
+        @buttons = ($next ? $step2 : (), $again, $view, $new);
     }
     elsif ($state eq 'failed') {
         $title   = ($MODE eq 'order' && !$hop) ? 'Order was not placed' : 'Swap did not go through';
@@ -676,12 +688,48 @@ sub hop_quote {
     push @rows, child(label("Warning: this route moves the pool prices by " . fmt_pct($bps)
                             . ". You will receive noticeably less than the market rate.", 'BODY2BOLD', color => 'PRIMARY'),
                       align => 'START') if $bps >= 500;
-    return finish_quote($q1, $s, $from, $to, $pool1, $min_out, $fee, undef, \@rows, 0, hop => $pool2->{id});
+    # the alternative: two direct swaps, signed one after the other. No bot, nothing waits.
+    my $min1 = Math::BigInt->new($q1->{out})->bmul(10000 - $s->{slippage})->bdiv(10000);
+    $min1 = Math::BigInt->new(1) if $min1->is_zero;
+    return finish_quote($q1, $s, $from, $to, $pool1, $min_out, $fee, undef, \@rows, 0, hop => $pool2->{id},
+                        alt => { min => $min1->bstr, next => $s->{to},
+                                 button => 'Sign twice instead (no front-running)',
+                                 note   => "Or do it as two direct swaps, $from->{ticker} \x{2192} ERG and then ERG \x{2192} "
+                                           . "$to->{ticker}, each signed by you. No bot and no waiting order, so nothing can be "
+                                           . 'front-run and there is no bot fee. Each swap completes exactly as shown or not at '
+                                           . 'all. The price can still move between the two; if you stop after the first you '
+                                           . 'hold ERG.' });
 }
 
 sub act_quote {
     my $reg = registry();
-    my $s   = clean_state(posted_values(), $reg);
+    run_quote($reg, clean_state(posted_values(), $reg));
+}
+
+# Second swap of a route the user chose to sign twice: the first swap (A -> ERG) is
+# signed, now offer ERG -> B for exactly the ERG it paid out. All from our own note.
+sub act_hop2 {
+    my $nonce = $cgi->url_param('n');
+    my $rec   = (defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/) ? load_record($nonce) : undef;
+    my $reg   = registry();
+    return mosaik_dialog('This swap is no longer available. Start again from the form.')
+        unless $rec && ($rec->{app} // '') eq 'swap' && ($rec->{to} // '') eq ERG && ($rec->{next} // '') =~ /^[0-9a-f]{64}\z/
+            && $reg->{pair}{ +ERG }{ $rec->{next} } && ($rec->{out} // '') =~ /^[1-9]\d{0,18}\z/
+            && ($rec->{address} // '') =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/;
+    my %slip = SLIPPAGE;
+    my $sl   = posted_values()->{slippage};
+    my $s = { address => $rec->{address}, from => ERG, to => $rec->{next}, amount => $rec->{out}, sort => 'liq',
+              slippage => (defined $sl && !ref $sl && exists $slip{$sl}) ? $sl : 100 };
+    local $CAPTURE  = [];
+    local $NO_SHORT = 1;    # the ERG from step 1 may still be unconfirmed; the builder checks for real
+    run_quote($reg, $s);
+    return unless @$CAPTURE;    # a dialog was sent instead
+    my ($box, @extra) = @$CAPTURE;
+    mosaik_replace(main_view($reg, $s, undef, $box), @extra);
+}
+
+sub run_quote {
+    my ($reg, $s) = @_;
     return mosaik_dialog('Choose the token you want to pay with.')   unless defined $s->{from};
     return mosaik_dialog('Choose the token you want to receive.')    unless defined $s->{to};
     return mosaik_dialog('Enter the amount you want to swap.')       unless defined $s->{amount};
@@ -822,7 +870,7 @@ sub finish_quote {    # balance check, Swap / Place order button, and the respon
     my @rows = @$rows;
     my @extra;
     my $short = 0;
-    if (defined $q->{balance}) {
+    if (defined $q->{balance} && !$NO_SHORT) {
         my $need = Math::BigInt->new($s->{amount});
         if ($s->{from} eq ERG) {
             $need->badd($fee + 1000000);                  # network fee + a minimal change box
@@ -855,12 +903,29 @@ sub finish_quote {    # balance check, Swap / Place order button, and the respon
         }
         push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay',
                        onFinished => (defined $nonce && record_file($nonce)) ? 'status' : 'refresh');
-        push @rows, button($order ? 'Place order' : "Swap $from->{ticker} for $to->{ticker}", 'pay'),
-                    button('Refresh quote', 'preview', style => 'TEXT');
+        push @rows, button($order ? 'Place order' : "Swap $from->{ticker} for $to->{ticker}", 'pay');
+        if (my $alt = $opt{alt}) {    # a second way to do the same thing, with its own signing link and status
+            my $url2 = 'ergopay://' . ergopay_host() . '/api.pl?action=ergopay'
+                     . "&p=$pool->{id}&f=$s->{from}&a=$s->{amount}&m=$alt->{min}&addr=$s->{address}&t=$alt->{next}";
+            my $n2 = new_nonce();
+            my $ok = defined $n2 && record_file($n2);
+            if ($ok) {
+                $url2 .= "&n=$n2";
+                watch_add('swap', $n2);
+                push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&mode=$MODE_Q&simple=$SIMPLE&n=$n2",
+                               id => 'status2', postValues => 'NONE');
+            }
+            push @extra, O(type => 'ErgoPayAction', url => $url2, id => 'pay2', onFinished => $ok ? 'status2' : 'refresh');
+            push @rows, O(type => 'HorizontalRule', vPadding => 'HALF_DEFAULT'),
+                        child(label($alt->{note}, 'BODY2', color => 'SECONDARY'), align => 'START'),
+                        button($alt->{button}, 'pay2', style => 'SECONDARY');
+        }
+        push @rows, button('Refresh quote', 'preview', style => 'TEXT');
     }
 
     my $box = O(type => 'Box', id => 'quote',
                 children => [ child(card(column(\@rows, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), hAlign => 'JUSTIFY') ]);
+    if ($CAPTURE) { @$CAPTURE = ($box, @extra); return }
     mosaik_replace($box, @extra);
 }
 
@@ -915,7 +980,7 @@ sub act_orders {
 sub ergopay_error { out_json(O(message => $_[0], messageSeverity => 'ERROR')) }
 
 sub act_ergopay {
-    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n l h);
+    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n l h t);
     return ergopay_refund(\%p) if defined $p{r};
     my $order = (defined $p{o} && $p{o} eq '1') ? 1 : 0;
     for my $k (qw(p f)) {
@@ -955,6 +1020,9 @@ sub act_ergopay {
         order_box => $r->{order_box}, address => $r->{address}, from => $r->{from}, to => $r->{to},
         amount => $r->{amount}, out => $r->{out}, min_out => $r->{min_out}, limit => ($r->{limit} ? 1 : 0),
         ($hop ? (hop => 1) : ()),
+        # first of two direct swaps the user signs one after the other: where the ERG goes next
+        ((!$order && $r->{to} eq ERG && defined $p{t} && $p{t} =~ /^[0-9a-f]{64}\z/ && $p{t} ne $r->{from} && $reg->{pair}{ +ERG }{ $p{t} })
+            ? (next => $p{t}) : ()),
     }) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/ && note_is_ours($p{n}, 'swap');
     order_register($r->{order_box}, $r->{address}) if $order;    # the completing bot watches it from now on
     # The signing message is the last thing the user reads, and it may be reached through a
@@ -986,7 +1054,10 @@ sub act_ergopay {
     }
     else {
         my $impact = ($r->{impact_bps} // 0) + 0;
-        $msg = "SigmaSwap: swap $pays for $gets. $net";
+        my $next = (defined $p{t} && $p{t} =~ /^[0-9a-f]{64}\z/ && $p{t} ne $r->{from} && $r->{to} eq ERG && $reg->{pair}{ +ERG }{ $p{t} })
+            ? $reg->{tokens}{ $p{t} } : undef;
+        $msg = $next ? "SigmaSwap, step 1 of 2: swap $pays for $gets. $net Step 2, ERG for $next->{label}, is a second swap you sign afterwards."
+                     : "SigmaSwap: swap $pays for $gets. $net";
         $msg .= ' WARNING: this trade moves the pool price by ' . fmt_pct($impact) . ', so you receive much less than the market rate.'
             if $impact >= 500;
         $severity = $impact >= 500 ? 'WARNING' : 'INFORMATION';

@@ -41,9 +41,10 @@ app, do not sign it.
 
 - **Token names are not unique.** Anyone can create a token called "SigUSD". The apps show the token
   id when two listed tokens share a name, and your wallet shows its own verified badge. Check it.
-- **A swap between two tokens that share no pool goes through ERG.** You sign once: the first half happens
-  directly and the second half is an order (see the next point). If that order cannot fill at your minimum,
-  what you get back on cancelling is ERG, not the token you started with.
+- **A swap between two tokens that share no pool goes through ERG.** Signing once makes the second half an
+  order (see the next point); if it cannot fill at your minimum, cancelling returns ERG, not the token you
+  started with. Signing twice makes both halves direct swaps with nothing to front-run, but the price can
+  move between them.
 - **Orders and limit orders are public while they wait.** Other traders can trade ahead of them, so
   you may receive only your minimum. A limit order may never fill; you can cancel it at any time.
 - **Liquidity providers can lose value** compared with simply holding, when prices move.
