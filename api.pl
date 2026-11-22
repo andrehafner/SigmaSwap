@@ -37,7 +37,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 9;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 10;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -146,6 +146,18 @@ sub posted_values {
     return ref $v eq 'HASH' ? $v : {};
 }
 
+# Two tokens with no pool of their own can still be swapped through ERG: A -> ERG -> B.
+# A pool must be the first output of its transaction, so two pools can never share
+# one. Instead the first swap is direct and its ERG goes straight into an order for
+# B, which a bot completes: one signature. Offered on the direct screen only.
+sub can_hop {
+    my ($reg, $from, $to) = @_;
+    my $erg = ERG;
+    return 0 unless $MODE eq 'direct' && defined $from && defined $to;
+    return 0 if $from eq $erg || $to eq $erg || $from eq $to || $reg->{pair}{$from}{$to};
+    return ($reg->{pair}{$from}{$erg} && $reg->{pair}{$erg}{$to}) ? 1 : 0;
+}
+
 # Everything the wallet posts is untrusted: keep only well-formed, known values.
 sub clean_state {
     my ($v, $reg) = @_;
@@ -157,7 +169,8 @@ sub clean_state {
         $s{$k} = $id if defined $id && !ref $id && exists $reg->{tokens}{$id};
     }
     $s{from} = ERG if !defined $s{from} && exists $reg->{tokens}{ +ERG };
-    delete $s{to} if defined $s{to} && defined $s{from} && !$reg->{pair}{ $s{from} }{ $s{to} };
+    delete $s{to} if defined $s{to} && defined $s{from} && !$reg->{pair}{ $s{from} }{ $s{to} }
+                     && !can_hop($reg, $s{from}, $s{to});
     if (defined $s{from}) {
         my $a = $v->{ 'amount_' . $reg->{tokens}{ $s{from} }{decimals} };
         $s{amount} = "$a" if defined $a && !ref $a && "$a" =~ /^[1-9]\d{0,18}\z/;
@@ -210,7 +223,7 @@ sub fmt_liq {    # "12,340 ERG" / "~ 85 ERG"
 sub token_pool {
     my ($reg, $id, $other) = @_;
     my $pairs = $reg->{pair}{$id} or return undef;
-    return $pairs->{$other} if defined $other;
+    return $pairs->{$other} if defined $other && $pairs->{$other};
     return $pairs->{ +ERG } if $pairs->{ +ERG };
     my ($best) = sort { $b->{tvl} <=> $a->{tvl} } values %$pairs;
     return $best;
@@ -223,6 +236,7 @@ sub token_dropdown {
         my ($nano, $est) = ($t eq ERG && !defined $other) ? () : pool_erg($reg, token_pool($reg, $t, $other));
         $liq{$t}   = $nano // 9e99;      # ERG itself (no single pool) stays first
         $label{$t} = defined $nano ? "$name  \x{00B7}  " . fmt_liq($nano, $est) : $name;
+        $label{$t} .= "  \x{00B7}  via ERG" if defined $other && can_hop($reg, $other, $t);
     }
     my @sorted = $sort eq 'az'
         ? sort { ($b eq ERG) <=> ($a eq ERG) || lc $reg->{tokens}{$a}{label} cmp lc $reg->{tokens}{$b}{label} || $a cmp $b } @$ids
@@ -344,7 +358,7 @@ sub main_view {
     my @from_ids = $order ? (grep { $_ eq $erg || $reg->{pair}{$_}{$erg} } @{ $reg->{order} }) : @{ $reg->{order} };
     my @to_ids   = !$from ? ()
                  : ($order && $from->{id} ne $erg) ? ($erg)
-                 : keys %{ $reg->{pair}{ $from->{id} } };
+                 : (keys %{ $reg->{pair}{ $from->{id} } }, grep { can_hop($reg, $from->{id}, $_) } @{ $reg->{order} });
     my $sort = $s->{sort} || 'liq';
     my %slip = SLIPPAGE;
     my @form = (
@@ -399,7 +413,9 @@ sub main_view {
 
     # ---- quote / status area, open orders, footer
     push @kids, child($quote_box || quote_placeholder(), align => 'JUSTIFY');
-    push @kids, child(orders_placeholder($s->{address}), align => 'JUSTIFY') if $order;
+    # a route through ERG leaves an order behind, so its screen needs the list too
+    push @kids, child(orders_placeholder($s->{address}), align => 'JUSTIFY')
+        if $order || ($from && can_hop($reg, $from->{id}, $s->{to}));
     push @kids, label('Network fee ' . fmt_amount(cfg('MINER_FEE', 1100000), 9) . ' ERG. No service fee. '
                       . 'Your wallet signs every transaction; SigmaSwap never holds your funds.',
                       'BODY2', color => 'SECONDARY', talign => 'CENTER') unless $SIMPLE;
@@ -527,6 +543,7 @@ sub act_status {
     my $what   = $MODE eq 'order' ? 'order' : 'swap';
 
     my $rec = load_record($nonce);
+    my $hop = $rec && $rec->{hop};
     if (!$rec) {
         return mosaik_replace(status_box("Waiting for your wallet", [
             "Your wallet has not picked up this $what yet. If you cancelled signing, nothing happened.",
@@ -549,30 +566,33 @@ sub act_status {
         @buttons = ($view, $new);
     }
     elsif ($state eq 'executed') {
-        $title   = 'Order executed';
+        $title   = $hop ? 'Swap complete' : 'Order executed';
         @lines   = ($summary, defined $r->{received} ? 'You received ' . describe_amount($reg, $rec->{to}, $r->{received}) . '.'
                                                      : 'The bot completed your order.');
         @buttons = ($view, $new);
     }
     elsif ($state eq 'order_open' || $state eq 'executing') {
-        $title   = $state eq 'executing' ? 'Order is being executed' : 'Order is waiting for a bot';
-        @lines   = ($summary, 'This usually takes a few minutes. If the price is below your minimum it waits; '
-                              . 'you can cancel it under "My open orders".');
+        $title   = $hop ? ($state eq 'executing' ? 'Second swap is being completed' : 'First swap done, second is waiting for a bot')
+                 : $state eq 'executing' ? 'Order is being executed' : 'Order is waiting for a bot';
+        @lines   = ($summary, ($hop ? 'Your tokens were swapped for ERG, and that ERG is in an order for the token you chose. ' : '')
+                              . 'This usually takes a few minutes. If the price is below your minimum it waits; '
+                              . 'you can cancel it under "My open orders"' . ($hop ? ' and take the ERG.' : '.'));
         @buttons = ($again, $view, $new);
     }
     elsif ($state eq 'cancelled') {
         $title   = 'Order cancelled';
-        @lines   = ($summary, 'The order was refunded to your address.');
+        @lines   = ($summary, $hop ? 'The second swap was cancelled: the ERG from the first swap is back on your address.'
+                                   : 'The order was refunded to your address.');
         @buttons = ($view, $new);
     }
     elsif ($state eq 'pending') {
-        $title   = $MODE eq 'order' ? 'Order submitted' : 'Swap submitted';
+        $title   = ($MODE eq 'order' && !$hop) ? 'Order submitted' : 'Swap submitted';
         @lines   = ($summary, 'Waiting for the next block (about two minutes).');
         @buttons = ($again, $view, $new);
     }
     elsif ($state eq 'failed') {
-        $title   = $MODE eq 'order' ? 'Order was not placed' : 'Swap did not go through';
-        @lines   = ($summary, $MODE eq 'order'
+        $title   = ($MODE eq 'order' && !$hop) ? 'Order was not placed' : 'Swap did not go through';
+        @lines   = ($summary, ($MODE eq 'order' && !$hop)
                         ? 'The funds it needed were spent by another transaction first. Nothing was lost. Preview again.'
                         : 'Someone else traded in this pool first. Nothing was spent. Preview again for a fresh price.');
         @buttons = (button('Preview again', 'preview'), $new);
@@ -592,6 +612,73 @@ sub act_status {
     mosaik_replace(status_box($title, \@lines, \@buttons), @extra);
 }
 
+# A -> ERG -> B, one signature (see can_hop). The preview prices both swaps; the
+# minimum the user agrees to is the minimum of B, enforced by the order contract.
+sub hop_quote {
+    my ($reg, $s) = @_;
+    my $erg = ERG;
+    my ($from, $to)     = @{ $reg->{tokens} }{ $s->{from}, $s->{to} };
+    my ($pool1, $pool2) = ($reg->{pair}{ $s->{from} }{$erg}, $reg->{pair}{$erg}{ $s->{to} });
+    my $q1 = chain('quote', { pool => $pool1->{id}, from => $s->{from}, amount => $s->{amount}, address => $s->{address} });
+    return mosaik_dialog($q1->{error} || 'Could not get a quote. Please try again.') unless $q1->{ok};
+    return mosaik_dialog('This pool no longer matches the selected pair. Please reopen the app.')
+        unless $q1->{to} eq $erg && "$q1->{out}" =~ /^\d+\z/ && ref $q1->{order} eq 'HASH';
+    my $order = $q1->{order};
+    my $mid   = Math::BigInt->new($q1->{out})->bsub($order->{extra});    # ERG that goes on to the second swap
+    return mosaik_dialog('This amount is too small for a route through ERG: the fees would eat it.')
+        if $mid->bcmp(Math::BigInt->new($order->{max_ex_fee})->bmul(10)) < 0;
+    my $q2 = chain('quote', { pool => $pool2->{id}, from => $erg, amount => $mid->bstr });
+    return mosaik_dialog($q2->{error} || 'Could not get a quote. Please try again.') unless $q2->{ok};
+    return mosaik_dialog('This pool no longer matches the selected pair. Please reopen the app.')
+        unless $q2->{to} eq $s->{to} && "$q2->{out}" =~ /^\d+\z/;
+    return mosaik_dialog('This amount is too small to swap on this route.') if $q2->{out} eq '0';
+
+    my $min_out = Math::BigInt->new($q2->{out})->bmul(10000 - $s->{slippage})->bdiv(10000);
+    $min_out = Math::BigInt->new(1) if $min_out->is_zero;
+    my $ex_fee = Math::BigInt->new($order->{min_ex_fee})->bmul($q2->{out})->bdiv($min_out);
+    $ex_fee = Math::BigInt->new($order->{max_ex_fee}) if $ex_fee->bcmp($order->{max_ex_fee}) > 0;
+    my $fee = cfg('MINER_FEE', 1100000) + 0;
+    my $bps = $q1->{impact_bps} + $q2->{impact_bps};
+    my $get_el = O(type => 'TokenLabel', tokenId => $s->{to}, tokenName => $to->{ticker},
+                   decimals => $to->{decimals} ? N($to->{decimals}) : undef, amount => N($q2->{out}),
+                   style => 'HEADLINE2', textColor => 'PRIMARY');
+    my $least = fmt_amount($min_out->bstr, $to->{decimals}) . " $to->{ticker}";
+    my @rows = (
+        O(type => 'Row', packed => TRUE, spacing => 'HALF_DEFAULT', children => [
+            O(type => 'Image', url => icon_url($s->{from}), size => 'SMALL'),
+            O(type => 'Icon', icon => 'FORWARD', size => 'SMALL', tintColor => 'SECONDARY'),
+            O(type => 'Image', url => icon_url($erg), size => 'SMALL'),
+            O(type => 'Icon', icon => 'FORWARD', size => 'SMALL', tintColor => 'SECONDARY'),
+            O(type => 'Image', url => icon_url($s->{to}), size => 'SMALL'),
+        ]),
+        kv_row('You pay', fmt_amount($s->{amount}, $from->{decimals}) . " $from->{ticker}"),
+        kv_row('You receive (estimate)', $get_el),
+        kv_row('At least', $least),
+    );
+    if (!$SIMPLE) {
+        push @rows,
+            O(type => 'HorizontalRule', vPadding => 'HALF_DEFAULT'),
+            kv_row('Route', "$from->{ticker} \x{2192} ERG \x{2192} $to->{ticker}"),
+            kv_row('Through', "\x{2248} " . fmt_amount($q1->{out}, 9, 4) . ' ERG'),
+            kv_row('Rate', "1 $from->{ticker} \x{2248} " . fmt_rate($s->{amount}, $from->{decimals}, $q2->{out}, $to->{decimals}) . " $to->{ticker}"),
+            kv_row('Price impact (both pools)', fmt_pct($bps)),
+            kv_row('Pool fees', fmt_pct(($q1->{fee_denom} - $q1->{fee_num}) * 10000 / $q1->{fee_denom}) . ' + '
+                                . fmt_pct(($q2->{fee_denom} - $q2->{fee_num}) * 10000 / $q2->{fee_denom})),
+            kv_row('Bot fee', "\x{2248} " . fmt_amount($ex_fee->bstr, 9, 4) . ' ERG (max ' . fmt_amount($order->{max_ex_fee}, 9) . ')'),
+            kv_row('Network fee', fmt_amount($fee, 9) . ' ERG');
+    }
+    push @rows, child(label("No pool trades $from->{ticker} for $to->{ticker} directly, so this goes through ERG. You sign once. "
+                            . "Your $from->{ticker} is swapped for ERG right away, and that ERG goes straight into an order for "
+                            . "$to->{ticker}, which a bot completes a few minutes later at the pool price then, never below "
+                            . "$least. A waiting order can be front-run down to that minimum. If the price drops below it the "
+                            . 'order waits: cancel it under "My open orders" and you get the ERG back, not the '
+                            . "$from->{ticker}.", 'BODY2', color => 'SECONDARY'), align => 'START');
+    push @rows, child(label("Warning: this route moves the pool prices by " . fmt_pct($bps)
+                            . ". You will receive noticeably less than the market rate.", 'BODY2BOLD', color => 'PRIMARY'),
+                      align => 'START') if $bps >= 500;
+    return finish_quote($q1, $s, $from, $to, $pool1, $min_out, $fee, undef, \@rows, 0, hop => $pool2->{id});
+}
+
 sub act_quote {
     my $reg = registry();
     my $s   = clean_state(posted_values(), $reg);
@@ -599,6 +686,7 @@ sub act_quote {
     return mosaik_dialog('Choose the token you want to receive.')    unless defined $s->{to};
     return mosaik_dialog('Enter the amount you want to swap.')       unless defined $s->{amount};
 
+    return hop_quote($reg, $s) if can_hop($reg, $s->{from}, $s->{to});
     my $pool = $reg->{pair}{ $s->{from} }{ $s->{to} };
     my ($from, $to) = @{ $reg->{tokens} }{ $s->{from}, $s->{to} };
     if ($LIMIT) {    # the price becomes the order's minimum: amount x price, in the receive token's units
@@ -730,7 +818,7 @@ sub detail_rows {
 }
 
 sub finish_quote {    # balance check, Swap / Place order button, and the response
-    my ($q, $s, $from, $to, $pool, $min_out, $fee, $order, $rows, $is_limit) = @_;
+    my ($q, $s, $from, $to, $pool, $min_out, $fee, $order, $rows, $is_limit, %opt) = @_;
     my @rows = @$rows;
     my @extra;
     my $short = 0;
@@ -756,7 +844,7 @@ sub finish_quote {    # balance check, Swap / Place order button, and the respon
     else {
         my $url = 'ergopay://' . ergopay_host() . '/api.pl?action=ergopay'
                 . "&p=$pool->{id}&f=$s->{from}&a=$s->{amount}&m=" . $min_out->bstr . "&addr=$s->{address}"
-                . ($order ? '&o=1' : '') . ($is_limit ? '&l=1' : '');
+                . ($order ? '&o=1' : '') . ($is_limit ? '&l=1' : '') . ($opt{hop} ? "&h=$opt{hop}" : '');
         # a random id links this quote to the transaction the wallet is about to fetch (see act_status)
         my $nonce = new_nonce();
         if (defined $nonce && record_file($nonce)) {
@@ -827,7 +915,7 @@ sub act_orders {
 sub ergopay_error { out_json(O(message => $_[0], messageSeverity => 'ERROR')) }
 
 sub act_ergopay {
-    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n l);
+    my %p = map { $_ => scalar $cgi->param($_) } qw(p f a m addr o r n l h);
     return ergopay_refund(\%p) if defined $p{r};
     my $order = (defined $p{o} && $p{o} eq '1') ? 1 : 0;
     for my $k (qw(p f)) {
@@ -845,8 +933,17 @@ sub act_ergopay {
     return ergopay_error('This pool is not available for swaps.')
         unless $pool && ($pool->{x}{id} eq $p{f} || $pool->{y}{id} eq $p{f});
 
+    # a route through ERG: both pools from the published list, first one trades the token for ERG
+    my $hop;
+    if (defined $p{h}) {
+        ($hop) = grep { $_->{id} eq $p{h} } values %{ $reg->{pair}{ +ERG } || {} };
+        return ergopay_error('This route is not available.')
+            unless $hop && !$order && $p{h} =~ /^[0-9a-f]{64}\z/ && $p{h} ne $p{p} && $p{f} ne ERG && $pool->{x}{id} eq ERG;
+        $order = 1;    # from here on it is tracked like an order: there is an order box to watch
+    }
     my $r = chain('build', { pool => $p{p}, from => $p{f}, amount => $p{a}, min_out => $p{m}, address => $p{addr},
-                             mode => $order ? 'order' : 'direct',
+                             ($hop ? (hop_pool => $hop->{id}) : ()),
+                             mode => $hop ? 'hop' : $order ? 'order' : 'direct',
                              limit => ($order && defined $p{l} && $p{l} eq '1') ? JSON::PP::true : JSON::PP::false });
     return ergopay_error($r->{error} || 'The swap could not be prepared. Please try again.') unless $r->{ok};
 
@@ -857,6 +954,7 @@ sub act_ergopay {
         app => 'swap', t => time, mode => ($order ? 'order' : 'direct'), tx_id => $r->{tx_id}, watch_box => $r->{watch_box},
         order_box => $r->{order_box}, address => $r->{address}, from => $r->{from}, to => $r->{to},
         amount => $r->{amount}, out => $r->{out}, min_out => $r->{min_out}, limit => ($r->{limit} ? 1 : 0),
+        ($hop ? (hop => 1) : ()),
     }) if defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/ && note_is_ours($p{n}, 'swap');
     order_register($r->{order_box}, $r->{address}) if $order;    # the completing bot watches it from now on
     # The signing message is the last thing the user reads, and it may be reached through a
@@ -867,7 +965,17 @@ sub act_ergopay {
     my $gets = fmt_amount($r->{out}, $to->{decimals}) . " $to->{label}";
     my $net  = 'Network fee ' . fmt_amount($r->{miner_fee}, 9) . ' ERG.';
     my ($msg, $severity);
-    if ($order) {
+    if ($hop) {
+        my $least  = fmt_amount($r->{min_out}, $to->{decimals}) . " $to->{label}";
+        my $impact = ($r->{impact_bps} // 0) + 0;
+        $msg = "SigmaSwap: swap $pays for about $gets through ERG, and never less than $least. Your $from->{label} is swapped for "
+             . fmt_amount($r->{mid}, 9) . " ERG now; a bot then swaps that ERG for $to->{label} (fee up to "
+             . fmt_amount($r->{max_ex_fee}, 9) . " ERG). $net Until the bot is done you can cancel in SigmaSwap and take the ERG.";
+        $msg .= ' WARNING: this route moves the pool prices by ' . fmt_pct($impact) . ', so you receive much less than the market rate.'
+            if $impact >= 500;
+        $severity = $impact >= 500 ? 'WARNING' : 'INFORMATION';
+    }
+    elsif ($order) {
         my $least = fmt_amount($r->{min_out}, $to->{decimals}) . " $to->{label}";
         $msg = $r->{limit}
             ? "SigmaSwap limit order: sell $pays for at least $least. It waits until the price is reached; "
@@ -915,6 +1023,8 @@ sub act_notify {
         my $st   = $r->{state} // 'unknown';
         my $what = describe_amount($reg, $it->{from}, $it->{amount});
         if ($it->{mode} eq 'order') {
+            return (1, "Your swap of $what through ERG is complete: you received "
+                       . describe_amount($reg, $it->{to}, $r->{received} // $it->{out}) . '.') if $st eq 'executed' && $it->{hop};
             return (1, "Your order for $what was filled: you received "
                        . describe_amount($reg, $it->{to}, $r->{received} // $it->{out}) . '.') if $st eq 'executed';
             return (1) if $st eq 'cancelled';

@@ -502,6 +502,8 @@ def user_outputs(address, height, out_toks, out_erg, first_token=None):
 def cmd_build(req):
     if req.get("mode") == "order":
         return build_order(req)
+    if req.get("mode") == "hop":
+        return build_hop(req)
     from ergo_lib_python.chain import NetworkPrefix
     from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
     from ergo_lib_python.wallet import BoxSelection, Wallet
@@ -788,6 +790,111 @@ def build_order(req):
         "ex_fee": str(ex_fee), "max_ex_fee": str(op["max_ex_fee"]), "miner_fee": str(fee),
         "inputs": len(chosen), "height": height,
         "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id), "limit": limit,
+    }
+
+
+def hop_amount(out_erg, op):
+    """ERG sold in the second swap of a route: the first swap's ERG minus the order's fee deposit."""
+    return out_erg - op["extra"]
+
+
+def build_hop(req):
+    """Token A -> ERG -> token B with ONE signature.
+
+    Two pools cannot share a transaction (each must be its first output), so the
+    route is: a direct swap A -> ERG whose ERG does not return to the user but goes
+    straight into an ordinary ErgoDex order "sell this ERG for B, at least min_out".
+    A bot (ours, or anyone's) completes the order a little later; until then the
+    user can cancel it and take the ERG. `min_out` is the minimum of B.
+    """
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection, Wallet
+
+    cfg = req["cfg"]
+    pool1_id = req_token_id(req.get("pool"), "pool")
+    pool2_id = req_token_id(req.get("hop_pool"), "pool")
+    from_id = req_token_id(req.get("from"), "token")
+    amount = req_amount(req.get("amount"), "amount")
+    min_out = req_amount(req.get("min_out"), "minimum output")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    op = order_params(cfg)
+    if pool1_id == pool2_id or from_id == ERG_ID:
+        raise SwapError("Invalid route.")
+
+    pool1 = load_pool(cfg, pool1_id)
+    pool2 = load_pool(cfg, pool2_id)
+    if pool1.kind != "n2t" or pool2.kind != "n2t":
+        raise SwapError("This route is not available.")
+    mid_id, out1, r_in, r_out = pool1.quote(from_id, amount)
+    if mid_id != ERG_ID:
+        raise SwapError("This route is not available.")
+    if out1 >= r_out:
+        raise SwapError("Not enough liquidity in this pool.")
+    amount2 = hop_amount(out1, op)
+    if amount2 < 10 * op["max_ex_fee"]:
+        raise SwapError("This amount is too small for a route through ERG: the fees would eat it.")
+    to_id, out2, r_in2, r_out2 = pool2.quote(ERG_ID, amount2)
+    if out2 < min_out:
+        raise SwapError("The price moved beyond your slippage tolerance. Please preview the swap again.")
+    if out2 >= r_out2:
+        raise SwapError("Not enough liquidity in the second pool.")
+    # the order half can be filled by anyone down to its minimum: never accept one far below today's price
+    if min_out < out2 * (10000 - MAX_ORDER_SLIPPAGE_BPS) // 10000:
+        raise SwapError("That minimum is too far below the current price (more than %d %%). "
+                        "Preview the swap again in SigmaSwap." % (MAX_ORDER_SLIPPAGE_BPS // 100))
+    terms = order_terms(pool2, ERG_ID, amount2, min_out, op)
+    if terms["box_value"] != out1 or terms["to"] == from_id:
+        raise SwapError("This route is not available.")
+
+    def need_erg(toks):
+        n = len(set(toks) - ({from_id} if toks.get(from_id) == amount else set()))
+        return fee + change_need(n)
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, from_id, amount)
+
+    ctx, height = chain_context(cfg)
+    pool_out = new_pool_candidate(pool1, from_id, amount, out1, height)
+    order_out = ErgoBoxCandidate(
+        value=out1, script=order_tree(terms, pool2, pk_constant(address), amount2, min_out, op),
+        creation_height=height)
+    out_toks = dict(user_toks)
+    out_toks[from_id] -= amount
+    user_outs = user_outputs(address, height, out_toks, user_erg - fee)
+
+    inputs = [pool1.box] + chosen
+    unsigned = TxBuilder(BoxSelection(inputs, []), [pool_out, order_out] + user_outs, height, fee, address).build()
+    try:
+        Wallet([]).sign_tx_input(unsigned, 0, inputs, [], ctx)       # the first pool accepts this transaction
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: pool %s rejected the swap: %s\n" % (pool1.nft, str(e)[:300]))
+        raise SwapError("The pool did not accept this swap. Please preview it again.")
+
+    # the order box exactly as it will exist, and proof that it can be completed and belongs to the user
+    order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 1)
+    out, ex_fee = simulate_execution(pool2, order_box, terms, address, amount2, min_out, op, ctx, height)
+    parsed = parse_order(json.loads(order_box.json()), bytes(pk_constant(address)))
+    if not parsed or parsed.get("amount") != str(amount2) or parsed.get("min_out") != str(min_out) \
+            or not completing_tx(cfg, pool2, parsed, ctx, height):
+        raise SwapError("This swap could not be prepared. Please preview again.")
+
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, inputs, [], ctx)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id),
+        "address": addr_str, "mode": "order", "hop": True,
+        "pool": pool1.nft, "hop_pool": pool2.nft, "from": from_id, "to": to_id,
+        "amount": str(amount), "mid": str(out1), "out": str(out), "min_out": str(min_out),
+        "ex_fee": str(ex_fee), "max_ex_fee": str(op["max_ex_fee"]), "miner_fee": str(fee),
+        "impact_bps": impact_bps(amount, out1, r_in, r_out, pool1.fee_num)
+                      + impact_bps(amount2, out2, r_in2, r_out2, pool2.fee_num),
+        "inputs": len(inputs), "height": height,
+        "watch_box": hexid(pool1.box.box_id), "order_box": hexid(order_box.box_id), "limit": False,
     }
 
 
