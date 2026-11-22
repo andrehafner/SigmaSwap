@@ -4,7 +4,7 @@
 # and virtualenv:   https://<host>/cgi-bin/sigmaswap/sigmamint/
 #
 #   Mosaik (inside the Ergo wallet)
-#     GET  api.pl                          -> start screen: "Mint a token" / "Mint an NFT"
+#     GET  api.pl                          -> start screen: wallet address, then "Mint a token" / "Mint an NFT"
 #     POST api.pl?action=form&k=token|nft  -> the form
 #     POST api.pl?action=preview&k=...     -> check the input, show what will be minted + Mint button
 #     POST api.pl?action=status&n=<id>     -> what happened to the mint
@@ -234,10 +234,21 @@ sub result_placeholder {
     return O(type => 'Box', id => 'result', children => [ button('Preview', 'preview') ]);
 }
 
+sub good_address { my ($a) = @_; return (defined $a && !ref $a && $a =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/) ? $a : undef }
+
+# The start screen asks for the address first. It is an input like any other, so it is posted
+# along when a button leads on, and the form shows it already chosen; "Mint another" brings it back.
 sub home_view {
+    my $addr = good_address(posted_values()->{address});
     return column([
         label('SigmaMint', 'HEADLINE1', color => 'PRIMARY'),
         label('Create your own token or NFT on Ergo', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
+        child(card(column([
+            child(label('Your wallet address', 'BODY1BOLD'), align => 'START'),
+            O(type => 'ErgoAddressChooseButton', id => 'address', value => $addr, onValueChanged => 'home',
+              style => $addr ? 'BUTTON_SECONDARY' : undef),
+            child(label('What you mint arrives at this address, and it pays the network fee.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+        ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY'),
         child(card(column([
             child(label('Token', 'HEADLINE2'), align => 'START'),
             child(label('A token you can send, trade or give away: points, tickets, a community coin. '
@@ -314,9 +325,11 @@ sub file_view {
 
 sub base_actions {
     return (
-        O(type => 'BackendRequestAction', url => "$API?action=form&k=token", id => 'goToken', postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=form&k=nft",   id => 'goNft',   postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=home",         id => 'home',    postValues => 'NONE'),
+        # VALID, not NONE: the chosen address travels between the start screen and the forms.
+        # The start screen has no other input, and the forms' other fields are ignored there.
+        O(type => 'BackendRequestAction', url => "$API?action=form&k=token", id => 'goToken', postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=form&k=nft",   id => 'goNft',   postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=home",         id => 'home',    postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=preview&k=$KIND&s=$SESSION", id => 'preview', postValues => 'VALID'),
         O(type => 'BrowserAction', url => "$BASE/?s=$SESSION", id => 'openWeb'),
         O(type => 'BackendRequestAction', url => "$API?action=file&k=nft&s=$SESSION", id => 'fileAdded', postValues => 'NONE'),
