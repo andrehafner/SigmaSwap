@@ -1037,16 +1037,22 @@ def pool_asset_names(pool):
     return names
 
 
-def add_amounts(pool, dx):
-    """Depositing `dx` of X: the matching Y (rounded up so X is the binding side) and LP received."""
+def add_amounts(pool, amount, side="x"):
+    """Depositing `amount` of X (of Y when side is "y"): the matching other side, rounded up so the
+    given side is the binding one and is taken exactly, and the LP received. -> (dx, dy, lp)"""
     _x, X, _y, Y, _lp, supply = pool_state(pool)
     if supply <= 0:
         raise SwapError("This pool has no liquidity yet.")
-    dy = -(-dx * Y // X)
+    if side == "y":
+        dy = amount
+        dx = -(-dy * X // Y)
+    else:
+        dx = amount
+        dy = -(-dx * Y // X)
     lp = min(dx * supply // X, dy * supply // Y)
-    if dy <= 0 or lp <= 0:
+    if dx <= 0 or dy <= 0 or lp <= 0:
         raise SwapError("That amount is too small for this pool.")
-    return dy, lp
+    return dx, dy, lp
 
 
 def remove_amounts(pool, lp):
@@ -1120,7 +1126,7 @@ def _lp_info(pool, names=None):
 
 
 def cmd_lpquote(req):
-    """Price an add (amount of X in) or a remove (amount of LP in)."""
+    """Price an add (amount of X in, or of Y with side "y") or a remove (amount of LP in)."""
     cfg = req["cfg"]
     pool = load_pool(cfg, req_token_id(req.get("pool"), "pool"))
     res = _lp_info(pool)
@@ -1129,9 +1135,9 @@ def cmd_lpquote(req):
         x_out, y_out = remove_amounts(pool, amount)
         res.update({"lp_in": str(amount), "x_out": str(x_out), "y_out": str(y_out)})
     else:
-        dy, lp = add_amounts(pool, amount)
+        dx, dy, lp = add_amounts(pool, amount, "y" if req.get("side") == "y" else "x")
         supply = int(res["supply"])
-        res.update({"x_in": str(amount), "y_in": str(dy), "lp_out": str(lp),
+        res.update({"x_in": str(dx), "y_in": str(dy), "lp_out": str(lp),
                     "share_bps": lp * 10000 // (supply + lp)})
         if req.get("address"):
             req_address(req["address"])
@@ -1155,11 +1161,14 @@ def cmd_lpbuild(req):
     x_id, X, y_id, Y, lp_id, supply = pool_state(pool)
 
     if action == "add":
-        dy, lp = add_amounts(pool, amount)
-        # the price may have moved since the preview: never take more Y, or give fewer LP, than agreed
-        if dy > req_amount(req.get("max_y"), "limit") or lp < req_amount(req.get("min_lp"), "limit"):
+        side = "y" if req.get("side") == "y" else "x"
+        dx, dy, lp = add_amounts(pool, amount, side)
+        # the price may have moved since the preview: never take more of the other token, or give
+        # fewer LP, than agreed
+        other, limit = (dx, "max_x") if side == "y" else (dy, "max_y")
+        if other > req_amount(req.get(limit), "limit") or lp < req_amount(req.get("min_lp"), "limit"):
             raise SwapError("The pool price moved. Please preview again.")
-        dx, dlp = amount, lp
+        dlp = lp
         need = {y_id: dy}
         if x_id != ERG_ID:
             need[x_id] = dx

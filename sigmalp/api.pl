@@ -4,9 +4,11 @@
 #   https://<host>/cgi-bin/sigmaswap/sigmalp/
 #
 #   Mosaik
-#     GET  api.pl                    -> start screen: "Add liquidity" / "Your positions"
+#     GET  api.pl                    -> start screen: wallet address, then "Add liquidity" / "Your positions"
 #     POST api.pl?action=add         -> the add form        ?action=addq  -> preview + button
+#          (either amount may be typed; addq&side=&lx=&ly= says what the last preview showed)
 #     POST api.pl?action=pos         -> choose address       ?action=posq  -> positions + withdraw buttons
+#          (the address chosen on the start screen travels with every screen; with one, pos is posq)
 #     POST api.pl?action=status&n=   -> what happened        GET ?action=notify -> wallet notification check
 #   ErgoPay
 #     GET  api.pl?action=ergopay&op=add|remove&...
@@ -25,7 +27,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 3;
+use constant APP_VERSION => 4;
 use constant ERG         => '0' x 64;
 use constant TOLERANCE   => 100;     # basis points the pool may move between preview and signing
 
@@ -44,6 +46,9 @@ $action = '' unless defined $action;
 
 my %mosaik = ('' => \&act_app, home => \&act_home, add => \&act_add, addq => \&act_addq,
               pos => \&act_pos, posq => \&act_posq, status => \&act_status);
+
+# "Your positions" with an address already chosen: show them straight away
+$action = 'posq' if $action eq 'pos' && good_address(posted_values()->{address});
 
 if ($cgi->cgi_error) { die_json('Bad request') }
 elsif ($action eq 'ergopay') {
@@ -84,6 +89,15 @@ sub tinfo {
         : { ticker => "token $short (unlisted)", decimals => 0 };
 }
 sub amt { my ($raw, $t) = @_; return fmt_amount($raw, $t->{decimals}) . " $t->{ticker}" }
+
+# An amount for the screen. A token is shown as a TokenLabel: the wallet adds its own
+# verified/unverified badge and opens the token's details on tap, which a name alone cannot do.
+sub amount_el {
+    my ($id, $raw, $t) = @_;
+    return amt($raw, $t) if $id eq ERG;
+    return O(type => 'TokenLabel', tokenId => $id, tokenName => $t->{ticker},
+             decimals => $t->{decimals} ? N($t->{decimals}) : undef, amount => N($raw), style => 'BODY1BOLD');
+}
 
 sub pool_list {    # [pool id, "ERG / SigUSD"] by liquidity
     my ($reg) = @_;
@@ -128,7 +142,8 @@ sub scale {    # n * bps / 10000, rounded down (scalar on purpose: bdiv returns 
 
 sub base_actions {
     return (
-        O(type => 'BackendRequestAction', url => "$API?action=home", id => 'home',   postValues => 'NONE'),
+        # VALID, not NONE: the chosen address goes back to the start screen with the user
+        O(type => 'BackendRequestAction', url => "$API?action=home", id => 'home',   postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=add",  id => 'goAdd',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=pos",  id => 'goPos',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=addq", id => 'preview', postValues => 'VALID'),
@@ -154,18 +169,24 @@ sub header_rows {
             child(row([ child(label($title, 'HEADLINE2'), weight => N(1)), button('Change', 'home', style => 'TEXT') ]), align => 'JUSTIFY'));
 }
 sub address_card {
-    my ($addr, $on_change) = @_;
+    my ($addr, $on_change, $note) = @_;
     return child(card(column([
         child(label('Your wallet address', 'BODY1BOLD'), align => 'START'),
         O(type => 'ErgoAddressChooseButton', id => 'address', value => $addr, onValueChanged => $on_change,
           style => $addr ? 'BUTTON_SECONDARY' : undef),
+        defined $note ? child(label($note, 'BODY2', color => 'SECONDARY'), align => 'START') : (),
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 }
 
+# The start screen asks for the address first. It is an input like any other, so it is posted
+# along when a button leads on, and each screen shows it again: chosen once, kept everywhere.
+# Coming back from a status screen there is no input to post, so that link names it (addr=).
 sub home_view {
+    my $addr = good_address(posted_values()->{address}) || good_address($cgi->url_param('addr'));
     return column([
         label('SigmaLP', 'HEADLINE1', color => 'PRIMARY'),
         label('Provide liquidity to the ErgoDex pools', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
+        address_card($addr, 'home', $addr ? undef : 'Choose it once here. It is used for your positions and for adding liquidity.'),
         child(card(column([
             child(label('Add liquidity', 'HEADLINE2'), align => 'START'),
             child(label('Put two tokens into a pool, in the pool\'s current ratio. You receive LP tokens that stand '
@@ -193,30 +214,64 @@ sub add_view {
     my $addr  = good_address($v->{address});
     my $pools = pool_list($reg);
     my ($sel) = grep { defined $v->{pool} && !ref $v->{pool} && $_->[0] eq $v->{pool} } @$pools;
-    my @form = (
-        child(label('Pool', 'BODY1BOLD'), align => 'START'),
-        child(O(type => 'DropDownList', id => 'pool', value => $sel ? $sel->[0] : undef, onValueChanged => 'goAdd',
-                placeholder => 'Select pool', entries => O(map { $_->[0] => $_->[1] } @$pools)), align => 'JUSTIFY'),
-    );
-    if ($sel) {
-        my $x = tinfo($reg, $sel->[2]{x}{id});
-        my $y = tinfo($reg, $sel->[2]{y}{id});
-        my $val = $v->{"ax_$x->{decimals}"};
-        push @form,
-            child(label("Amount of $x->{ticker}", 'BODY1BOLD'), align => 'START'),
-            child(O(type => 'DecimalInputField', id => "ax_$x->{decimals}",
-                    value => (defined $val && !ref $val && "$val" =~ /^[1-9]\d{0,18}\z/) ? N("$val") : undef,
-                    placeholder => "How much $x->{ticker} to add", onValueChanged => 'clearResult', onImeAction => 'preview',
-                    imeActionType => 'DONE', minValue => N(1), scale => N($x->{decimals})), align => 'JUSTIFY'),
-            child(label("The matching amount of $y->{ticker} is worked out from the pool's current price.",
-                        'BODY2', color => 'SECONDARY'), align => 'START');
-    }
     return column([
         header_rows('Add liquidity'),
         address_card($addr, 'clearResult'),
-        child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY'),
-        child(O(type => 'Box', id => 'result', children => [ $sel ? button('Preview', 'preview') : () ]), align => 'JUSTIFY'),
+        child(card(column([
+            child(label('Pool', 'BODY1BOLD'), align => 'START'),
+            child(O(type => 'DropDownList', id => 'pool', value => $sel ? $sel->[0] : undef, onValueChanged => 'goAdd',
+                    placeholder => 'Select pool', entries => O(map { $_->[0] => $_->[1] } @$pools)), align => 'JUSTIFY'),
+        ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY'),
+        child(amounts_view($reg, $v, $sel), align => 'JUSTIFY'),
     ], id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
+}
+
+# The two amounts and the preview under them are one element ('amounts'). A preview replaces just
+# that: the fields come back filled in and the rest of the screen, and its scroll position, stay.
+sub amounts_view {
+    my ($reg, $v, $sel, $result) = @_;
+    my (@form, @kids);
+    if ($sel) {
+        my $x = tinfo($reg, $sel->[2]{x}{id});
+        my $y = tinfo($reg, $sel->[2]{y}{id});
+        for my $f ([ ax => $x ], [ ay => $y ]) {    # ids carry the decimals: the wallet posts raw units
+            my ($pre, $t) = @$f;
+            my $val = typed_amount($v, "${pre}_$t->{decimals}");
+            push @form,
+                child(label("Amount of $t->{ticker}", 'BODY1BOLD'), align => 'START'),
+                child(O(type => 'DecimalInputField', id => "${pre}_$t->{decimals}", value => defined $val ? N($val) : undef,
+                        placeholder => "How much $t->{ticker} to add", onValueChanged => 'clearResult', onImeAction => 'preview',
+                        imeActionType => 'DONE', minValue => N(1), scale => N($t->{decimals})), align => 'JUSTIFY');
+        }
+        push @form, child(label("Type either amount. Preview fills in the other from the pool's current price.",
+                                'BODY2', color => 'SECONDARY'), align => 'START');
+        push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+    }
+    push @kids, child($result || O(type => 'Box', id => 'result', children => [ $sel ? button('Preview', 'preview') : () ]), align => 'JUSTIFY');
+    return column(\@kids, id => 'amounts', spacing => 'DEFAULT');
+}
+
+sub typed_amount {    # a posted amount field, as a string of raw units, or undef
+    my ($v, $key) = @_;
+    my $a = $v->{$key};
+    return (defined $a && !ref $a && "$a" =~ /^[1-9]\d{0,18}\z/) ? "$a" : undef;
+}
+
+# Which of the two amounts did the user type? After a preview both fields are filled in, so the
+# preview action's URL carries what that preview showed (lx, ly) and the side it was worked out
+# from: the field that no longer matches is the one that was typed.
+# -> 'x' | 'y' | '' (both were changed) | undef (nothing entered)
+sub typed_side {
+    my ($ax, $ay) = @_;
+    return undef unless defined $ax || defined $ay;
+    return 'x' unless defined $ay;
+    return 'y' unless defined $ax;
+    my ($lx, $ly, $last) = map { my $p = $cgi->url_param($_); defined $p ? $p : '' } qw(lx ly side);
+    my ($cx, $cy) = ($ax ne $lx, $ay ne $ly);
+    return ''  if $cx && $cy;
+    return 'x' if $cx;
+    return 'y' if $cy;
+    return $last eq 'y' ? 'y' : 'x';
 }
 
 sub pos_view {
@@ -244,18 +299,24 @@ sub act_app {
     ));
 }
 sub act_home { mosaik_replace(home_view()) }
-sub act_add  { mosaik_replace(add_view(registry(), posted_values())) }
+sub act_add {    # a fresh form (also after choosing another pool): the second amount starts empty
+    my $v = posted_values();
+    delete @$v{ grep { /^ay_/ } keys %$v };
+    mosaik_replace(add_view(registry(), $v));
+}
 sub act_pos  { mosaik_replace(pos_view(posted_values())) }
 
 sub sign_actions {    # (ErgoPayAction, its status action) tied together by a fresh note id
     my ($id, $url) = @_;
     my $nonce = new_nonce();
     my $ok = defined $nonce && record_file($nonce);
+    my ($addr) = $url =~ /&addr=([1-9A-HJ-NP-Za-km-z]{40,60})\z/;    # so "Done" can lead back with it
     my @a;
     if ($ok) {
         $url .= "&n=$nonce";
         watch_add('lp', $nonce);
-        push @a, O(type => 'BackendRequestAction', url => "$API?action=status&n=$nonce", id => "st_$id", postValues => 'NONE');
+        push @a, O(type => 'BackendRequestAction', url => "$API?action=status&n=$nonce" . ($addr ? "&addr=$addr" : ''),
+                   id => "st_$id", postValues => 'NONE');
     }
     push @a, O(type => 'ErgoPayAction', url => $url, id => $id, onFinished => $ok ? "st_$id" : 'home');
     return @a;
@@ -268,16 +329,19 @@ sub act_addq {
     my ($sel) = grep { defined $v->{pool} && !ref $v->{pool} && $_->[0] eq $v->{pool} } @{ pool_list($reg) };
     return mosaik_dialog('Choose a pool.') unless $sel;
     my $x   = tinfo($reg, $sel->[2]{x}{id});
-    my $amt = $v->{"ax_$x->{decimals}"};
-    return mosaik_dialog("Enter how much $x->{ticker} you want to add.") unless defined $amt && !ref $amt && "$amt" =~ /^[1-9]\d{0,18}\z/;
+    my ($kx, $ky) = ("ax_$x->{decimals}", 'ay_' . tinfo($reg, $sel->[2]{y}{id})->{decimals});
+    my $side = typed_side(typed_amount($v, $kx), typed_amount($v, $ky));
+    return mosaik_dialog('Enter how much you want to add, of either token.') unless defined $side;
+    return mosaik_dialog('Both amounts were changed. Clear one of them: it is worked out from the other.') if $side eq '';
+    my $amt = typed_amount($v, $side eq 'y' ? $ky : $kx);
 
-    my $q = chain('lpquote', { pool => $sel->[0], action => 'add', amount => "$amt", address => $addr });
+    my $q = chain('lpquote', { pool => $sel->[0], action => 'add', side => $side, amount => $amt, address => $addr });
     return mosaik_dialog($q->{error} || 'Could not get a quote. Please try again.') unless $q->{ok};
     my $y   = tinfo($reg, $q->{y}, $q->{y_info});
     my $fee = cfg('MINER_FEE', 1100000) + 0;
     my @rows = (
-        kv_row("You add", amt($q->{x_in}, $x)),
-        kv_row("and", amt($q->{y_in}, $y)),
+        kv_row("You add", amount_el($q->{x}, $q->{x_in}, $x)),
+        kv_row("and", amount_el($q->{y}, $q->{y_in}, $y)),
         kv_row('Your share of the pool', '+' . ($q->{share_bps} >= 1 ? fmt_pct($q->{share_bps}) : 'less than 0.01 %')),
         kv_row('Pool fee you earn a share of', fmt_pct((1000 - $q->{fee_num}) * 10)),
         kv_row('Network fee', fmt_amount($fee, 9) . ' ERG'),
@@ -297,15 +361,19 @@ sub act_addq {
     if    (!$addr) { push @rows, label('Choose your wallet address above to continue.', 'BODY1', talign => 'CENTER') }
     elsif ($short) { push @rows, label($short, 'BODY1', talign => 'CENTER') }
     else {
-        my $max_y  = scale($q->{y_in}, 10000 + TOLERANCE)->badd(1)->bstr;
+        # the typed amount is taken exactly; the other one may grow by the tolerance, not more
+        my $max_other = scale($side eq 'y' ? $q->{x_in} : $q->{y_in}, 10000 + TOLERANCE)->badd(1)->bstr;
         my $min_lp = scale($q->{lp_out}, 10000 - TOLERANCE)->bstr;
         $min_lp = '1' if $min_lp eq '0';
         push @extra, sign_actions('pay', 'ergopay://' . ergopay_host()
-                                  . "/api.pl?action=ergopay&op=add&p=$sel->[0]&a=$amt&q1=$max_y&q2=$min_lp&addr=$addr");
+                                  . "/api.pl?action=ergopay&op=add&p=$sel->[0]&s=$side&a=$amt&q1=$max_other&q2=$min_lp&addr=$addr");
         push @rows, button('Add liquidity', 'pay');
     }
     push @rows, button('Refresh', 'preview', style => 'TEXT');
-    mosaik_replace(result_box(\@rows), @extra);
+    # the amounts come back with both filled in; from here on "Preview" knows what was shown
+    @$v{ $kx, $ky } = @$q{qw(x_in y_in)};
+    mosaik_replace(amounts_view($reg, $v, $sel, result_box(\@rows)), @extra,
+        O(type => 'BackendRequestAction', url => "$API?action=addq&side=$side&lx=$q->{x_in}&ly=$q->{y_in}", id => 'preview', postValues => 'VALID'));
 }
 
 sub act_posq {
@@ -325,8 +393,9 @@ sub act_posq {
         push @rows, O(type => 'HorizontalRule', vPadding => 'QUARTER_DEFAULT') if $i > 1;
         push @rows,
             child(label("$x->{ticker} / $y->{ticker}", 'BODY1BOLD'), align => 'START'),
-            child(label('Worth now: ' . amt($p->{x_out}, $x) . ' + ' . amt($p->{y_out}, $y)
-                        . ($p->{share_bps} >= 1 ? ' (' . fmt_pct($p->{share_bps}) . ' of the pool)' : ''), 'BODY1'), align => 'START');
+            kv_row('Worth now', amount_el($p->{x}, $p->{x_out}, $x)),
+            kv_row('and', amount_el($p->{y}, $p->{y_out}, $y)),
+            ($p->{share_bps} >= 1 ? kv_row('Your share of the pool', fmt_pct($p->{share_bps})) : ());
         my @buttons;
         for my $pct (25, 50, 100) {
             my $lp = $pct == 100 ? Math::BigInt->new($p->{lp_amount}) : scale($p->{lp_amount}, $pct * 100);
@@ -358,9 +427,12 @@ sub describe_change {
 sub act_status {
     my $nonce = $cgi->url_param('n');
     return mosaik_dialog('Unknown request.') unless defined $nonce && $nonce =~ /^[0-9a-f]{32}\z/;
-    my $self  = O(type => 'BackendRequestAction', url => "$API?action=status&n=$nonce", id => 'status', postValues => 'NONE');
+    my $addr  = good_address($cgi->url_param('addr'));
+    my $with  = $addr ? "&addr=$addr" : '';
+    my $self  = O(type => 'BackendRequestAction', url => "$API?action=status&n=$nonce$with", id => 'status', postValues => 'NONE');
+    my $back  = O(type => 'BackendRequestAction', url => "$API?action=home$with", id => 'done', postValues => 'NONE');
     my $again = button('Refresh status', 'status', style => 'SECONDARY');
-    my $home  = button('Done', 'home', style => 'TEXT');
+    my $home  = button('Done', 'done', style => 'TEXT');
     my $row   = sub { child(label($_[0], $_[1] || 'BODY1'), align => 'START') };
     my $rec   = load_record($nonce);
     my @rows;
@@ -384,7 +456,7 @@ sub act_status {
         }
     }
     mosaik_replace(column([ label('SigmaLP', 'HEADLINE1', color => 'PRIMARY'), child(result_box(\@rows), align => 'JUSTIFY') ],
-                          id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT'), $self);
+                          id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT'), $self, $back);
 }
 
 sub act_notify {
@@ -405,11 +477,14 @@ sub act_notify {
 sub ergopay_error { out_json(O(message => $_[0], messageSeverity => 'ERROR')) }
 
 sub act_ergopay {
-    my %p = map { $_ => scalar $cgi->param($_) } qw(op p a q1 q2 addr n);
+    my %p = map { $_ => scalar $cgi->param($_) } qw(op p a q1 q2 addr n s);
     return ergopay_error('Invalid request.')
         unless defined $p{op} && $p{op} =~ /^(add|remove)\z/ && defined $p{p} && $p{p} =~ /^[0-9a-f]{64}\z/
             && good_address($p{addr}) && !grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a q1 q2);
-    my %limits = $p{op} eq 'add' ? (max_y => $p{q1}, min_lp => $p{q2}) : (min_x => $p{q1}, min_y => $p{q2});
+    # an add names the amount of X, or of Y with s=y; q1 caps the other token
+    my $side   = (defined $p{s} && $p{s} eq 'y') ? 'y' : 'x';
+    my %limits = $p{op} ne 'add' ? (min_x => $p{q1}, min_y => $p{q2})
+               : (side => $side, ($side eq 'y' ? 'max_x' : 'max_y') => $p{q1}, min_lp => $p{q2});
     # Adding liquidity puts the user's funds INTO a pool, so only pools from the published list:
     # a link must never steer deposits into a look-alike pool somebody set up. Withdrawing only
     # returns the user's own share to them, so that stays possible for any pool.

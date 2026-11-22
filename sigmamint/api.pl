@@ -4,7 +4,7 @@
 # and virtualenv:   https://<host>/cgi-bin/sigmaswap/sigmamint/
 #
 #   Mosaik (inside the Ergo wallet)
-#     GET  api.pl                          -> start screen: "Mint a token" / "Mint an NFT"
+#     GET  api.pl                          -> start screen: wallet address, then "Mint a token" / "Mint an NFT"
 #     POST api.pl?action=form&k=token|nft  -> the form
 #     POST api.pl?action=preview&k=...     -> check the input, show what will be minted + Mint button
 #     POST api.pl?action=status&n=<id>     -> what happened to the mint
@@ -35,7 +35,7 @@ use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 use Unicode::Normalize qw(NFKC);
 
-use constant APP_VERSION => 5;
+use constant APP_VERSION => 6;
 use constant ERG         => '0' x 64;
 
 my $MAX_MB = cfg('MINT_MAX_UPLOAD_MB', 10) + 0;
@@ -69,7 +69,8 @@ $KIND = 'token' unless defined $KIND && $KIND eq 'nft';
 my $SESSION = $cgi->url_param('s');
 $SESSION = new_session() unless session_ok($SESSION);
 
-my %mosaik  = ('' => \&act_app, home => \&act_home, form => \&act_form, preview => \&act_preview, status => \&act_status);
+my %mosaik  = ('' => \&act_app, home => \&act_home, form => \&act_form, preview => \&act_preview, status => \&act_status,
+               file => \&act_file);
 my %plain   = (notify => \&act_notify);
 my %browser = (config => \&web_config, upload => \&web_upload);
 
@@ -233,10 +234,21 @@ sub result_placeholder {
     return O(type => 'Box', id => 'result', children => [ button('Preview', 'preview') ]);
 }
 
+sub good_address { my ($a) = @_; return (defined $a && !ref $a && $a =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/) ? $a : undef }
+
+# The start screen asks for the address first. It is an input like any other, so it is posted
+# along when a button leads on, and the form shows it already chosen; "Mint another" brings it back.
 sub home_view {
+    my $addr = good_address(posted_values()->{address});
     return column([
         label('SigmaMint', 'HEADLINE1', color => 'PRIMARY'),
         label('Create your own token or NFT on Ergo', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
+        child(card(column([
+            child(label('Your wallet address', 'BODY1BOLD'), align => 'START'),
+            O(type => 'ErgoAddressChooseButton', id => 'address', value => $addr, onValueChanged => 'home',
+              style => $addr ? 'BUTTON_SECONDARY' : undef),
+            child(label('What you mint arrives at this address, and it pays the network fee.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+        ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY'),
         child(card(column([
             child(label('Token', 'HEADLINE2'), align => 'START'),
             child(label('A token you can send, trade or give away: points, tickets, a community coin. '
@@ -288,31 +300,39 @@ sub form_view {
                         'BODY2', color => 'SECONDARY'), align => 'START');
     }
     else {
-        my $file = load_record(session_key($SESSION));
-        push @form, child(label('Picture, sound or video', 'BODY1BOLD'), align => 'START');
-        if ($file && $file->{cid}) {
-            push @form, child(label("\x{2713} " . ucfirst($file->{media}) . ' added', 'BODY1', color => 'PRIMARY'), align => 'START'),
-                        button('Choose a different file', 'openWeb', style => 'TEXT');
-        }
-        else {
-            push @form,
-                button('Choose file', 'openWeb', style => 'SECONDARY'),
-                child(label('This opens a page where you pick the file from your phone. When it says the file is '
-                            . 'added, come back here and tap Preview.', 'BODY2', color => 'SECONDARY'), align => 'START');
-        }
+        push @form, child(label('Picture, sound or video', 'BODY1BOLD'), align => 'START'),
+                    child(file_view(), align => 'JUSTIFY');
     }
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
     push @kids, child($result || result_placeholder(), align => 'JUSTIFY');
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
+# The file part of the NFT form is an element of its own ('file'). Nothing tells the wallet that
+# the browser page finished, so the user says so with "I added the file", which replaces just
+# this part: what was typed, and the place on the screen, stay as they are.
+sub file_view {
+    my $file = load_record(session_key($SESSION));
+    my @rows = ($file && $file->{cid})
+        ? (child(label("\x{2713} " . ucfirst($file->{media}) . ' added', 'BODY1', color => 'PRIMARY'), align => 'START'),
+           button('Choose a different file', 'openWeb', style => 'TEXT'))
+        : (button('Choose file', 'openWeb', style => 'SECONDARY'),
+           child(label('This opens a page where you pick the file from your phone. When it says the file is '
+                       . 'added, come back here and tap "I added the file".', 'BODY2', color => 'SECONDARY'), align => 'START'),
+           button('I added the file', 'fileAdded', style => 'TEXT'));
+    return column(\@rows, id => 'file', spacing => 'HALF_DEFAULT');
+}
+
 sub base_actions {
     return (
-        O(type => 'BackendRequestAction', url => "$API?action=form&k=token", id => 'goToken', postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=form&k=nft",   id => 'goNft',   postValues => 'NONE'),
-        O(type => 'BackendRequestAction', url => "$API?action=home",         id => 'home',    postValues => 'NONE'),
+        # VALID, not NONE: the chosen address travels between the start screen and the forms.
+        # The start screen has no other input, and the forms' other fields are ignored there.
+        O(type => 'BackendRequestAction', url => "$API?action=form&k=token", id => 'goToken', postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=form&k=nft",   id => 'goNft',   postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=home",         id => 'home',    postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=preview&k=$KIND&s=$SESSION", id => 'preview', postValues => 'VALID'),
         O(type => 'BrowserAction', url => "$BASE/?s=$SESSION", id => 'openWeb'),
+        O(type => 'BackendRequestAction', url => "$API?action=file&k=nft&s=$SESSION", id => 'fileAdded', postValues => 'NONE'),
         O(type => 'ChangeSiteAction', id => 'clearResult', newContent => O(view => result_placeholder())),
     );
 }
@@ -348,6 +368,13 @@ sub act_app {
 sub act_home { mosaik_replace(home_view()) }
 sub act_form { mosaik_replace(form_view(posted_values())) }
 
+sub act_file {    # "I added the file"
+    my $file = load_record(session_key($SESSION));
+    return mosaik_dialog('No file has arrived yet. Tap "Choose file", wait until the page says the file is added, then come back.')
+        unless $file && $file->{cid};
+    mosaik_replace(file_view());
+}
+
 sub act_preview {
     my $v = posted_values();
     return mosaik_dialog('Choose your wallet address first.')
@@ -381,8 +408,18 @@ sub act_preview {
         kv_row('Network fee', fmt_amount($fee, 9) . ' ERG'),
         child(label('About 0.001 ERG also moves into the box that holds your new '
                     . ($KIND eq 'nft' ? 'NFT' : 'tokens') . '. It stays yours.', 'BODY2', color => 'SECONDARY'), align => 'START'),
-        child(label('A mint cannot be undone or edited afterwards. Check the name and the numbers.', 'BODY2BOLD'), align => 'START'),
-        button($KIND eq 'nft' ? 'Mint NFT' : 'Mint token', 'pay');
+        child(label('A mint cannot be undone or edited afterwards. Check the name and the numbers.', 'BODY2BOLD'), align => 'START');
+    # Enough ERG for the fee, the new box and the change box? Say so here, as the swap and
+    # liquidity previews do, not only when the wallet asks for the transaction. An estimate
+    # (the builder decides for real); if the balance cannot be read the button is shown.
+    my $need = $fee + 2000000;
+    my $bal  = chain('balance', { address => $v->{address}, token => ERG });
+    if ($bal->{ok} && ($bal->{balance} // '') =~ /^\d+\z/ && Math::BigInt->new($bal->{balance})->bcmp($need) < 0) {
+        push @rows, label('Not enough ERG: this address holds ' . fmt_amount($bal->{balance}, 9) . ' ERG, and a mint needs about '
+                          . fmt_amount($need, 9) . ' ERG.', 'BODY1', talign => 'CENTER'),
+                    button('Check again', 'preview', style => 'SECONDARY');
+    }
+    else { push @rows, button($KIND eq 'nft' ? 'Mint NFT' : 'Mint token', 'pay') }
     mosaik_replace(result_box(\@rows),
         O(type => 'BackendRequestAction', url => "$API?action=status&k=$KIND&s=$SESSION&n=$nonce", id => 'status', postValues => 'NONE'),
         O(type => 'ErgoPayAction', id => 'pay', onFinished => 'status',

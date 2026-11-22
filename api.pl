@@ -6,10 +6,11 @@
 #   Mosaik (Ergo wallet in-app dApps)
 #     GET  api.pl                    -> MosaikApp JSON (the whole view)
 #     POST api.pl?action=refresh     -> re-render the form from the posted input values
+#          (&max=1: with the amount set to the address's whole balance of the pay token)
 #     POST api.pl?action=flip        -> same, with pay/receive tokens exchanged
 #     POST api.pl?action=quote       -> price the swap, show details + Swap button
 #     POST api.pl?action=orders      -> list the address's open swap orders (cancel buttons)
-#     POST api.pl?action=home        -> the start screen (choose direct swap or order)
+#     POST api.pl?action=home        -> the start screen (wallet address, then direct swap or order)
 #     POST api.pl?action=status&n=   -> what happened to the swap/order just signed
 #   (&mode=direct|order on every Mosaik action says which of the two screens is open)
 #   ErgoPay (EIP-20), fetched by the wallet when the user taps Swap
@@ -37,7 +38,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 11;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 12;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -279,6 +280,19 @@ sub home_view {
     }
     my $order_fee = fmt_amount(cfg('ORDER_MIN_EX_FEE', 6000000), 9);
 
+    # The address comes first. It is an input like any other, so it is posted along when a
+    # button leads on and every screen shows it again: chosen once, kept everywhere.
+    my $addr = posted_values()->{address};
+    $addr = undef unless defined $addr && !ref $addr && $addr =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/;
+    push @kids, child(card(column([
+        child(label('Your wallet address', 'BODY1BOLD'), align => 'START'),
+        O(type => 'ErgoAddressChooseButton', id => 'address', value => $addr, onValueChanged => 'homeAddr',
+          style => $addr ? 'BUTTON_SECONDARY' : undef),
+        $addr ? () : child(label('Choose it once here. Every swap screen uses it.', 'BODY2', color => 'SECONDARY'), align => 'START'),
+    ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+    # orders already waiting are this address's funds: reachable without picking a swap type first
+    push @kids, child(orders_placeholder($addr), align => 'JUSTIFY') if $addr;
+
     push @kids, child(card(column([
         child(label('Direct swap', 'HEADLINE2'), align => 'START'),
         child(label('One transaction between your wallet and the pool. You receive exactly the amount you are shown, '
@@ -378,15 +392,25 @@ sub main_view {
         child(token_dropdown('from', $reg, \@from_ids, $s->{from}, 'Select token', $sort), align => 'JUSTIFY'),
     );
     if ($from) {
+        # ERG is entered in the wallet's own amount field: the user can switch it to their fiat
+        # currency, and the other of the two is shown underneath. Its value is nanoERG either way,
+        # so nothing else changes. Without a fiat rate in the wallet it is a plain ERG field.
+        my $is_erg = $from->{id} eq ERG;
         push @form, child(O(
-            type => 'DecimalInputField', id => "amount_$from->{decimals}",
+            type => ($is_erg ? 'FiatOrErgAmountInputField' : 'DecimalInputField'), id => "amount_$from->{decimals}",
             value => defined $s->{amount} ? N($s->{amount}) : undef,
             placeholder => "Amount of $from->{ticker}",
             onValueChanged => 'clearQuote', onImeAction => 'preview', minValue => N(1),
-            imeActionType => 'DONE', scale => N($from->{decimals}),
+            imeActionType => 'DONE', scale => ($is_erg ? undef : N($from->{decimals})),
         ), align => 'JUSTIFY');
-        push @form, child(label('Balance: ' . fmt_amount($balance, $from->{decimals}) . " $from->{ticker}",
-                                'BODY2', color => 'SECONDARY'), align => 'END') if defined $balance;
+        # A token balance can be put in whole with one tap. Not ERG: an address emptied of ERG
+        # cannot pay for its next transaction.
+        my $all = defined $balance && $from->{id} ne ERG && "$balance" =~ /^[1-9]\d{0,18}\z/;
+        push @form, child(row([
+            child(label('Balance: ' . fmt_amount($balance, $from->{decimals}) . " $from->{ticker}",
+                        'BODY2', color => 'SECONDARY', talign => 'END'), weight => N(1)),
+            $all ? button('Use all', 'useAll', style => 'TEXT') : (),
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY') if defined $balance;
     }
     push @form,
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
@@ -437,11 +461,15 @@ sub base_actions {
         O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=order",  id => 'goOrder',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=refresh&mode=limit",  id => 'goLimit',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=refresh$m&reset=1",   id => 'resetPrice', postValues => 'VALID'),
-        O(type => 'BackendRequestAction', url => "$API?action=home&simple=$SIMPLE", id => 'home',     postValues => 'NONE'),
+        # VALID, not NONE: the chosen address goes back to the start screen with the user
+        O(type => 'BackendRequestAction', url => "$API?action=home&simple=$SIMPLE", id => 'home',     postValues => 'VALID'),
+        # the address was chosen on the start screen: no simple= here, the switch on that screen is posted
+        O(type => 'BackendRequestAction', url => "$API?action=home",                id => 'homeAddr', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=refresh$m", id => 'refresh', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=flip$m",    id => 'flip',    postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=quote$m",   id => 'preview', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=orders$m",  id => 'orders',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=refresh$m&max=1", id => 'useAll', postValues => 'VALID'),
         O(type => 'ReloadAction', id => 'reload'),
         # local (no network): typing a new amount drops a quote that no longer matches it
         O(type => 'ChangeSiteAction', id => 'clearQuote', newContent => O(view => quote_placeholder())),
@@ -508,7 +536,10 @@ sub act_refresh {
     my $reg = registry();
     my $s   = clean_state(posted_values(), $reg);
     fill_price($reg, $s, ($cgi->url_param('reset') // '') eq '1');
-    mosaik_replace(main_view($reg, $s, lookup_balance($s)));
+    my $balance = lookup_balance($s);
+    $s->{amount} = "$balance"    # "Use all"
+        if ($cgi->url_param('max') // '') eq '1' && defined $balance && $s->{from} ne ERG && "$balance" =~ /^[1-9]\d{0,18}\z/;
+    mosaik_replace(main_view($reg, $s, $balance));
 }
 
 sub act_flip {
