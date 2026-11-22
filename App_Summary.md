@@ -20,6 +20,9 @@
   Bitcoin, Dogecoin or Firo over the Rosen bridge (an independent project). The app builds Rosen's "lock" transaction.
 - **SigmaBridge, Swapuz option**: sells ERG for another coin through Swapuz (swapuz.com), a custodial exchange. The
   app opens an order with Swapuz and builds a plain payment of the ERG to that order's deposit address.
+- **SigmaLithos** (`sigmalithos/`): the Lithos mining pool (an independent project). A dashboard from Lithos's public
+  statistics, a read-only view of what a mining address received (from its transactions), and buying or selling LIT
+  on LithosDex by placing and cancelling orders under Lithos's own order contracts.
 - **SigmaStats** (`sigmastats/`): read-only. Network figures (explorer), a portfolio view of any address valued at
   ErgoDex pool prices, and price alerts. It builds no transactions and asks for no signature.
 - **Routes through ERG** (SigmaSwap, direct screen): two tokens with no shared pool are swapped A → ERG → B with one
@@ -164,6 +167,18 @@
   than 3 % below the preview. Then `[user boxes] → [deposit address (amount), user change, miner fee]`, read back and
   compared. A second fetch re-uses the same order while Swapuz still waits for it. Status reads Swapuz's order by id
   and is shown only if the answer carries that id and deposit address.
+- **SigmaLithos trading**: `POST ?action=quote` → `ldquote` reads the ERG:LIT pool box (by its NFT) and prices the
+  trade with the order contract's own formula. ErgoPay → `ldbuild` builds `[user boxes] → [order box, user change,
+  miner fee]`. The order box's script is Lithos's pinned order template with its placeholder constants replaced
+  (owner key, pool NFT, executor fee 0.003 ERG, miner-fee cap, amount, minimum); it is parsed back and compared
+  before use, and the minimum may not be more than 10 % below the current quote. A Lithos miner fills the order;
+  this service does not. Cancel (`ldcancel`): the owner spends the order box at input 0 with their own key; the
+  transaction is reduced against a stand-in box of the same value owned by that key and the real box id is put
+  back, because the library cannot evaluate the contract (see limitations). Open orders are found on-chain by
+  the contracts' template hashes and kept only if they belong to the address and the ERG:LIT pool.
+- **SigmaLithos dashboard / mining**: `lithosstats` passes Lithos's public API through (cached a minute);
+  `lithosminer` reads the address's last 200 transactions and counts those whose first input is Lithos's payout
+  contract, holding contract, or a collateral box. Nothing is stored.
 - **SigmaStats**: `GET sigmastats/api.pl` → `netstats` (explorer) + pool list. `POST ?action=portq` → `portfolio`
   reads the address's confirmed balance; tokens are valued only if they are on the published pool list (names of
   all other tokens are shown with their id and marked unverified). `POST ?action=alertset` stores an alert; the
@@ -200,6 +215,8 @@
 - **Lighthouse** (`upload.lighthouse.storage`, `gateway.lighthouse.storage`): SigmaMint stores
   uploaded NFT media there with the operator's API key. The wallet loads the preview picture
   from the gateway directly. Files on IPFS are public and effectively permanent.
+- **Lithos** (third party): `lithosprotocol.org/api/v1` for public pool statistics (no key, nothing sent but the
+  request); LithosDex contracts on-chain for LIT orders.
 - **Swapuz** (third party, `api.swapuz.com`, key in `SWAPUZ_API_KEY`): coin list, rate, order creation, order status.
   Custodial: it receives the user's ERG and pays out another coin. It receives the user's Ergo address (as refund
   address), the payout address and the amount.
@@ -293,6 +310,19 @@
 - **Price alerts are best effort.** They use the pool list from the ErgoDex API, checked once a minute, and reach
   the user only when the wallet next asks for notifications. They are not a stop-loss. Not yet seen in a real wallet.
 - **SigmaStats prices are pool prices**, and the ERG price is its SigUSD pool price, which can differ from exchanges.
+- **LithosDex orders cannot be simulated here.** Lithos's contracts use Ergo 6.0 operations that the transaction
+  library (ergo-lib-python 0.28) cannot parse or evaluate. So, unlike ErgoDex orders, an order's fill is not
+  proven before signing. What stands in for that: the order script is Lithos's published template with constants
+  substituted on the bytes, the construction reproduced two real, filled mainnet orders byte for byte, and the
+  price formula matched those fills exactly. No order from this app has been placed or filled on-chain yet.
+- **LithosDex cancel is built without evaluating the contract.** It relies on the contract's refund path (the
+  order at input 0 reduces to the owner's key), read from the source, not on a local run. No cancel from this app
+  has been broadcast; the first one should be of a small order. If it were wrong the transaction would be
+  rejected by the network, not lose funds, but the order would then need the Lithos client to cancel.
+- **Fills depend on Lithos miners** (about 5 % of blocks) and on a thin LIT market; orders can wait for hours.
+- **"My mining" recognises Lithos by two contract addresses and one token id built into the code**, taken from
+  mainnet transactions. A Lithos redeploy silently empties that screen until the constants are updated. Its net
+  figure counts bonds as costs until the matching payout arrives.
 - **Swapuz is custodial and outside this service's control.** After the payment, completion, rate, holds for identity
   checks and refunds are Swapuz's. The app's checks ensure the ERG goes to the deposit address Swapuz named for an
   order matching the request; they cannot ensure Swapuz pays. A compromised or wrong Swapuz answer that still names

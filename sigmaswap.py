@@ -2370,6 +2370,507 @@ def cmd_szstatus(req):
             "aml": o["aml"], "w_tx": o["w_tx"], "d_tx": o["d_tx"]}
 
 
+# ---------------------------------------------------------------- Lithos ----
+# sigmalithos/: the Lithos mining pool (lithosprotocol.org) from the wallet: pool
+# figures, a miner's payouts, and buying / selling LIT on LithosDex with orders.
+#
+# LithosDex orders are boxes under Lithos's own order contracts. Those are EIP-5
+# templates: one pinned tree per order kind in which every per-order term is a
+# sentinel constant (Lithos-Client, lithosdex/contracts/LDOrderContracts.scala).
+# The two trees below are those pinned trees. An order is the tree with the
+# sentinels replaced. That is done on the bytes, because the contracts use Ergo 6.0
+# operations this library cannot parse; for the same reason an order's execution
+# cannot be simulated here. What is checked instead: a tree built this way parses
+# back to the terms asked for, and the construction reproduced real, filled mainnet
+# orders byte for byte when it was written.
+
+LITHOS_API = "https://lithosprotocol.org/api/v1"
+LIT_ID = "c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7"
+LD_POOL_NFT = "c0b21ac51481a5d242809d9b1e189a8baf3803fe347ca01833c1aeb380e6eb29"      # the ERG:LIT pool
+LD_FEE_DENOM = 10000
+LD_EXECUTOR_FEE = 3000000        # what the Lithos client offers by default; miners skip orders paying less
+LD_MAX_MINER_FEE = 1000000
+LD_RETURNED = 1000000            # nanoERG an order box holds beyond its fill, returned with the fill
+LD_MAX_SLIPPAGE_BPS = 1000
+LD_SELL_PINNED = (
+    "1ba6041a040008cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179806084c444f5503"
+    "0303030402040004000e205d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d0100040204"
+    "00040204a09c01040204000300020002ff020006084c444f560404040406084c444f5301010101040206010104000500"
+    "0e691005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8"
+    "1798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303"
+    "830108cdeeac93b1a5730406084c444f5402020202d803d601b2a4730000d6027301d60373029595ed93db6508fe7303"
+    "91b1db630872017304938cb2db630872017305000173067307d809d604b2a5730800d605b2db63087204730900d606b2"
+    "db63087201730a00d6077e8c72050206d608e4c672010611d609e4c672010511d60a7e730b06d60b9972039d9c72037e"
+    "b27209730c0006720ad60c7eb27209730d0006d19683070193e5dc650cfe02730e730f027310731193c27204d0720293"
+    "8c7205018c7206019272077312927ec172040699997ec1a70672037313909c9c7e998c720602b2720873140006720b72"
+    "0c9c9a720773159a9c7e99c17201b2720873160006720a9c720b720c907eb0a57317d9010d4163d802d60f8c720d02d6"
+    "108c720d019593c2720f73189a7210c1720f72100673197202")
+LD_BUY_PINNED = (
+    "1b940419040008cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980402040004000e"
+    "205d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d010004000402040204a09c01040404"
+    "000300020002ff020006084c444f5604040404040006084c444f5301010101060101040205000e691005040004000e36"
+    "100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7"
+    "a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a573"
+    "0406084c444f5402020202d802d601b2a4730000d60273019595ed93db6508fe730291b1db630872017303938cb2db63"
+    "0872017304000173057306d80ad603b2db6308a7730700d604b2db63087201730800d605b2a5730900d6067e99c17205"
+    "c1a706d607e4c672010611d6087e8c72030206d609e4c672010511d60a7e730a06d60b9972089d9c72087eb27209730b"
+    "0006720ad60c7eb27209730c0006d19683060193e5dc650cfe02730d730e02730f7310938c7203018c72040193c27205"
+    "d072029272067311909c9c7e99c17201b2720773120006720b720c9c9a9a7206731373149a9c7e998c720402b2720773"
+    "150006720a9c720b720c907eb0a57316d9010d4163d802d60f8c720d02d6108c720d019593c2720f73179a7210c1720f"
+    "72100673187202")
+# sha256 of each contract without its constants: how the explorer indexes order boxes
+LD_SELL_TEMPLATE_HASH = "b4fd5d9be2ed32a5cc516e431bf317033d1033078026bb04baf7ae355c665dfc"
+LD_BUY_TEMPLATE_HASH = "7122d56978cf08f66ff5168a160e9e750002c62e79a6d985503da8ad02f11a98"
+_LD_SENTINELS = {
+    "pk": bytes.fromhex("08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+    "pool": bytes.fromhex("0e20" + "5d" * 32),
+    "ex": bytes.fromhex("06084c444f5301010101"), "mf": bytes.fromhex("06084c444f5402020202"),
+    "base": bytes.fromhex("06084c444f5503030303"), "min": bytes.fromhex("06084c444f5604040404"),
+}
+# where Lithos rollups sit while they pay out / collect proofs (P2S addresses of Payout and Holding_Guard)
+LITHOS_PAYOUT_ADDRESS = "3VaP5ZZQFaC1ucEnpUue1ZfgmX2bRamvJezvrVxfxNYmzy4fi4c9XFRmc5k3cfzw1YUFLdRHrX74tvGtpoPvh9NXZQSoSDVUS3DqdurRuVr7z6fkZkNRGZDjMZWHPZzSNRAKETELbx34wi1vqmNAqVMqHsHsTWax2XfdVaphxAsvv5HPbNkHp4tPg3APPzcC54WHuvfDqG8VaftmdZvqxh8G9xhfdd9LnUdFGQYRt3hLx6XcSqHmezE3ZH6KAG8pLbPp6LNVgiLdyFuunf9wA6EixdWxtXRaa7FG7CtARqWaRicNGLAdey9jdL5iwwHzYizAa2J42yjgoSxWF5nNz3Ma7LBdAxoQmfQwDsHWaKrP5ovicNkzMurGY8JUFTPMzR5nyCYfY6zoqce5Riubf4hZdqYUTD4vb4prUiJaFhYaUVwwMP73ZK6V54jiRyJArdseAkvXDnt3BbdFtMPvEswXcg5utsTjbzHmhXbnD7KiiQPLYzMdSXW4Ts5CCbVhqiK5Sd2DQbhTi3yvpdbQk1XZp9gienjRVkYT6kGnnnzGQXBVN1ffv1jVBTZ6b1TFqMkC39R4cChPHQiYh7gXyBjFHo2vTdTAWbUpHjjqu6HafRsawpaAtqrv1n73N2MhvmDgsgq9HP1KeHoc9qMbVTRznf3tHSLp2s4NaP3WhukTcECzPZ75BEStM1xzTy4BamkV2DCS44Fx3tMiW7CQkfPDw3o62jMRUBof6rQMHgsexwrHVfKzAbhwTCY5hNaxgXEVGjogz6Pin8P29dmnRNm9qosShogi6To6hMUXG1aFLFjBTwhprJ3L2JRfaYWEC41un66ZjPvExQaW65htdyACjKBsL74xFm6LmRs5XXAzctP23y3dMKZokCQttH87kBwMh8MCnAsv6Vba3cu8TiYiBJTdJG4K4dz4F7Yy3AC3VisGHcZ91UNPcfAQxb2wvp65CYXMiiapV5tq3FXrpNqpDuRwnkxAeVPcYW2Qm1qHQQcPpC2ZdiXEtFJAXcUCKnFHuYkoXCPfh4tg1P9zNFeSu6ntjkvfru3V6mmukBmupinCzr2Eo48gHj19E49ShwLszqqhrCQXcWRK7HTgmjS5xCfC5AcxaZW3fQCMELLSAmw6othTs7iusf84SjqvwfMZshtpaeiDBMTU6WvJ9iNhPbdtKKjA8vhE6bfNLVGtFgx6xepxq36mYYZpB3dVxoQpYN5WcsLXtmfLFJB5Nx7FG9eMbgLSPJLLcKo4UidBkmQfo7VxJZGGqyZQa29eGZf3YRd19J4GgxtRyXKDJ61x6mTxFdMuEWsiehPD7B2V5RVDtTUUz7MvZUbCpyk2vLxnPf5euKvQ7hkxohvvkLMwAhYn3pFudWsubNG42BHezbNpwPPtm1o8aAhbNktdrZgXPXV6WNMkHkmzG4H7LRguwBs1n132Tz7WZd5CnkREw3WDWwfSiSYkQAxm2SxX3ahnGx2aSk2V2NuNPShbGfdCHzHDUCLwn4wQ1cRd5VUTVwdrQwzYj6vZwuE3LiPd4nfRMzhMus5Y2Q4HPLHabzY1MDi2PU4uaHsPWZF9SHt6zDMoj88U4zddQLHJMBe47hjwT1nxRymibX4eZCJ1JxrF7cvtcPh7z2LGP6kVZmNySF2tRHcHdddPdPNuXTmwnQMyX8iAU515XU9z8n9NmQPXhfEKUT14AZfiyM2mws5SA8cXYEzQyTqy6fYbk8s8Cwe5FoKpF3cNuEeq4"
+LITHOS_HOLDING_ADDRESS = "WvonkGz7pj74cH7K3ZQvkwp99FSJVoGwqcqUuGCNMEYRsHscxLxALs2h95uwkx7QAyWv1xuWa9eedFUKmVKRVHrJDjis475EsFsf7Xw7mS689A5VeZMeRTBCQZyDMA3E6N7AKzANMwbjDnMPySLLsqC74dZhvY59bBE8ZCoxq4niuNp6cjVYh82xWKBuh3sps"
+LITHOS_COLLATERAL_TOKEN = "a8a790e784e93ac0e68649181ae3d251e84fb5c741624100e7e945ae1e82dc98"
+
+
+def _vlq(n):
+    out = b""
+    while True:
+        b, n = n & 0x7F, n >> 7
+        if n:
+            out += bytes([b | 0x80])
+        else:
+            return out + bytes([b])
+
+
+def _read_vlq(buf, i):
+    n = shift = 0
+    while True:
+        c = buf[i]
+        i += 1
+        n |= (c & 0x7F) << shift
+        shift += 7
+        if not c & 0x80:
+            return n, i
+
+
+def _ld_bigint(v):
+    """A BigInt constant as ErgoTree serializes it (type 6, length, two's complement)."""
+    size = max(1, (v.bit_length() + 8) // 8)
+    return b"\x06" + _vlq(size) + v.to_bytes(size, "big", signed=True)
+
+
+def _ld_segments(kind):
+    """The pinned tree cut at its sentinels -> (fixed byte runs, term names in order)."""
+    raw = bytes.fromhex(LD_SELL_PINNED if kind == "sell" else LD_BUY_PINNED)
+    size, i = _read_vlq(raw, 1)
+    body = raw[i:]
+    if raw[0] != 0x1B or size != len(body):
+        raise SwapError("Service misconfigured.")
+    cuts = sorted((body.find(v), k) for k, v in _LD_SENTINELS.items() if body.find(v) >= 0)
+    segs, names, last = [], [], 0
+    for pos, k in cuts:
+        segs.append(body[last:pos])
+        names.append(k)
+        last = pos + len(_LD_SENTINELS[k])
+    segs.append(body[last:])
+    return segs, names
+
+
+def ld_order_tree(kind, pk_const, min_quote, base=None):
+    """ErgoTree bytes of a LithosDex swap order on the ERG:LIT pool, for the owner key `pk_const`
+    (35 bytes, 08cd + key). kind "sell" sells `base` nanoERG for at least `min_quote` LIT units;
+    "buy" sells the LIT in the box for at least `min_quote` nanoERG after the executor fee."""
+    vals = {"pk": pk_const, "pool": b"\x0e\x20" + bytes.fromhex(LD_POOL_NFT), "ex": _ld_bigint(LD_EXECUTOR_FEE),
+            "mf": _ld_bigint(LD_MAX_MINER_FEE), "min": _ld_bigint(min_quote)}
+    if kind == "sell":
+        vals["base"] = _ld_bigint(base)
+    segs, names = _ld_segments(kind)
+    body = b"".join(seg + vals[k] for seg, k in zip(segs, names)) + segs[-1]
+    return b"\x1b" + _vlq(len(body)) + body
+
+
+def ld_parse_tree(tree):
+    """-> {"kind", "pk" (35 bytes), "pool", "ex", "mf", "min", "base"} for a LithosDex swap
+    order tree, or None. A tree counts only if rebuilding it from its terms gives it back."""
+    for kind in ("sell", "buy"):
+        try:
+            if tree[0] != 0x1B:
+                return None
+            size, i = _read_vlq(tree, 1)
+            body = tree[i:]
+            if size != len(body):
+                return None
+            segs, names = _ld_segments(kind)
+            out, p, ok = {"kind": kind}, 0, True
+            for seg, k in zip(segs, names):
+                if body[p:p + len(seg)] != seg:
+                    ok = False
+                    break
+                p += len(seg)
+                if k == "pk":
+                    out[k], p = body[p:p + 35], p + 35
+                elif k == "pool":
+                    out[k], p = body[p + 2:p + 34].hex(), p + 34
+                else:
+                    if body[p] != 6:
+                        ok = False
+                        break
+                    n, q = _read_vlq(body, p + 1)
+                    out[k], p = int.from_bytes(body[q:q + n], "big", signed=True), q + n
+            if not ok or body[p:] != segs[-1] or out["pk"][:2] != b"\x08\xcd":
+                continue
+            rebuilt = ld_order_tree(kind, out["pk"], out["min"], out.get("base")) \
+                if (out["pool"], out["ex"], out["mf"]) == (LD_POOL_NFT, LD_EXECUTOR_FEE, LD_MAX_MINER_FEE) else None
+            out["ours"] = rebuilt == tree        # exactly what this app would have built for these terms
+        except (IndexError, ValueError):
+            continue
+        return out
+    return None
+
+
+class LdPool(object):
+    """The ERG:LIT pool box. Reserves are the box's holdings less the fees it has set aside."""
+
+    def __init__(self, box):
+        assets = box.get("assets") or []
+        if len(assets) < 2 or assets[0].get("tokenId") != LD_POOL_NFT or assets[1].get("tokenId") != LIT_ID:
+            raise SwapError("The LithosDex pool is unavailable right now.")
+        reg = box.get("additionalRegisters") or {}
+        try:
+            fees = json.loads(reg["R5"]["renderedValue"])
+            pending = json.loads(reg["R6"]["renderedValue"])
+            self.fee, self.fee_x, self.fee_y = int(fees[0]), int(fees[1]), int(fees[2])
+            self.rx = int(box["value"]) - int(pending[0])
+            self.ry = int(assets[1]["amount"]) - int(pending[1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise SwapError("The LithosDex pool is unavailable right now.")
+        if not (0 < self.fee <= LD_FEE_DENOM and 0 <= self.fee_x < LD_FEE_DENOM and 0 <= self.fee_y < LD_FEE_DENOM
+                and self.rx > 0 and self.ry > 0):
+            raise SwapError("The LithosDex pool is unavailable right now.")
+        self.box_id = box.get("boxId")
+
+    def sell_out(self, base):
+        """LIT units the pool pays for `base` nanoERG (the order contract's own formula)."""
+        traded = base - base * self.fee_x // LD_FEE_DENOM
+        return self.ry * traded * self.fee // (self.rx * LD_FEE_DENOM + traded * self.fee)
+
+    def buy_out(self, sold):
+        """nanoERG the pool pays for `sold` LIT units, before the executor fee."""
+        traded = sold - sold * self.fee_y // LD_FEE_DENOM
+        return self.rx * traded * self.fee // (self.ry * LD_FEE_DENOM + traded * self.fee)
+
+
+def ld_pool(cfg):
+    page = explorer(cfg, "boxes/unspent/byTokenId/%s?limit=2" % LD_POOL_NFT) or {}
+    items = page.get("items") or []
+    if len(items) != 1:
+        raise SwapError("The LithosDex pool is unavailable right now.")
+    return LdPool(items[0])
+
+
+def _ld_terms(pool, side, amount):
+    """side "buy" = pay ERG, receive LIT (a sell order in LithosDex's naming); "sell" = pay LIT."""
+    if side == "buy":
+        return {"kind": "sell", "out": pool.sell_out(amount), "spot_out": amount * pool.ry // pool.rx,
+                "from": ERG_ID, "to": LIT_ID}
+    if side == "sell":
+        return {"kind": "buy", "out": pool.buy_out(amount) - LD_EXECUTOR_FEE, "spot_out": amount * pool.rx // pool.ry,
+                "from": LIT_ID, "to": ERG_ID}
+    raise SwapError("Choose whether to buy or sell LIT.")
+
+
+def cmd_ldquote(req):
+    cfg = req["cfg"]
+    pool = ld_pool(cfg)
+    res = {"price_9": str(pool.rx * 10 ** 9 // pool.ry), "reserve_erg": str(pool.rx), "reserve_lit": str(pool.ry),
+           "executor_fee": str(LD_EXECUTOR_FEE), "returned": str(LD_RETURNED)}
+    if req.get("amount") is not None:
+        amount = req_amount(req.get("amount"), "amount")
+        t = _ld_terms(pool, req.get("side"), amount)
+        if t["out"] <= 0:
+            raise SwapError("This amount is too small: the fees would eat it.")
+        res.update({"out": str(t["out"]), "from": t["from"], "to": t["to"], "amount": str(amount),
+                    "impact_bps": max(0, (t["spot_out"] - t["out"]) * 10000 // max(1, t["spot_out"])),
+                    "pool_fee_bps": (LD_FEE_DENOM - pool.fee) + (pool.fee_x if t["kind"] == "sell" else pool.fee_y)})
+    if req.get("address"):
+        req_address(req["address"])
+        bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+        res["balance_erg"] = str(int(bal.get("nanoErgs", 0)))
+        res["balance_lit"] = str(next((int(x.get("amount", 0)) for x in bal.get("tokens") or []
+                                       if x.get("tokenId") == LIT_ID), 0))
+    return res
+
+
+def cmd_ldbuild(req):
+    """Place a LithosDex swap order: one transaction from the user's boxes to the order box."""
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix, Token, TokenId
+    from ergo_lib_python.ergo_tree import ErgoTree
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+
+    cfg = req["cfg"]
+    side = req.get("side")
+    amount = req_amount(req.get("amount"), "amount")
+    min_out = req_amount(req.get("min_out"), "minimum output")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    pool = ld_pool(cfg)
+    t = _ld_terms(pool, side, amount)
+    if t["out"] <= 0:
+        raise SwapError("This amount is too small: the fees would eat it.")
+    # a waiting order is filled at whatever the pool pays then, down to its minimum: the minimum is
+    # the user's protection and arrives in the signing link, so never accept one far below today's price
+    if min_out < t["out"] * (10000 - LD_MAX_SLIPPAGE_BPS) // 10000:
+        raise SwapError("That minimum is too far below the current price (more than %d %%). Preview the order again."
+                        % (LD_MAX_SLIPPAGE_BPS // 100))
+    if min_out > t["out"]:
+        raise SwapError("The price moved beyond your slippage tolerance. Please preview the order again.")
+
+    pk = bytes(address.ergo_tree())[1:]            # 08cd + the 33-byte key
+    if t["kind"] == "sell":
+        tree = ld_order_tree("sell", pk, min_out, amount)
+        box_value, box_tokens, sell_token = amount + LD_EXECUTOR_FEE + LD_RETURNED, [], None
+    else:
+        tree = ld_order_tree("buy", pk, min_out)
+        box_value, box_tokens, sell_token = LD_RETURNED, [Token(TokenId(LIT_ID), amount)], LIT_ID
+    back = ld_parse_tree(tree)
+    if not back or not back["ours"] or back["kind"] != t["kind"] or back["pk"] != pk or back["min"] != min_out \
+            or back.get("base") != (amount if t["kind"] == "sell" else None):
+        raise SwapError("The order could not be prepared. Please try again.")
+
+    def need_erg(toks):
+        n = len(set(toks) - ({sell_token} if sell_token and toks.get(sell_token) == amount else set()))
+        return box_value + fee + change_need(n)
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, sell_token, amount)
+    ctx, height = chain_context(cfg)
+    order_out = ErgoBoxCandidate(value=box_value, script=ErgoTree.from_bytes(tree), creation_height=height,
+                                 tokens=box_tokens)
+    out_toks = dict(user_toks)
+    if sell_token:
+        out_toks[sell_token] -= amount
+    change = user_outputs(address, height, out_toks, user_erg - box_value - fee)
+    unsigned = TxBuilder(BoxSelection(chosen, []), [order_out] + change, height, fee, address).build()
+    built = json.loads(unsigned.json())["outputs"][0]
+    if built["ergoTree"] != tree.hex() or int(built["value"]) != box_value:
+        raise SwapError("The order could not be prepared. Please try again.")
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 0)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id), "address": addr_str, "side": side, "from": t["from"], "to": t["to"],
+        "amount": str(amount), "out": str(t["out"]), "min_out": str(min_out), "miner_fee": str(fee),
+        "executor_fee": str(LD_EXECUTOR_FEE), "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id),
+    }
+
+
+def _ld_order_view(box, pk=None):
+    """An explorer box as a swap order on the ERG:LIT pool -> dict, or None."""
+    try:
+        terms = ld_parse_tree(bytes.fromhex(box["ergoTree"]))
+        if not terms or terms["pool"] != LD_POOL_NFT or (pk is not None and terms["pk"] != pk):
+            return None
+        assets = box.get("assets") or []
+        if terms["kind"] == "sell":
+            amount, frm, to = terms["base"], ERG_ID, LIT_ID
+        else:
+            if not assets or assets[0].get("tokenId") != LIT_ID:
+                return None
+            amount, frm, to = int(assets[0]["amount"]), LIT_ID, ERG_ID
+        return {"box_id": box["boxId"], "kind": terms["kind"], "from": frm, "to": to, "amount": str(amount),
+                "min_out": str(terms["min"]), "value": str(int(box["value"]))}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def cmd_ldorders(req):
+    """Open LithosDex orders of one address on the ERG:LIT pool, read from the chain."""
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    pk = bytes(address.ergo_tree())[1:]
+    orders = []
+    for template_hash in (LD_SELL_TEMPLATE_HASH, LD_BUY_TEMPLATE_HASH):
+        offset = 0
+        while offset < 1000:
+            page = explorer(cfg, "boxes/unspent/byErgoTreeTemplateHash/%s?limit=100&offset=%d"
+                            % (template_hash, offset)) or {}
+            items = page.get("items") or []
+            orders.extend(o for o in (_ld_order_view(b, pk) for b in items) if o)
+            offset += 100
+            if len(items) < 100:
+                break
+    return {"orders": orders}
+
+
+def cmd_ldcancel(req):
+    """Take an open order back: the owner spends the order box with their own key.
+
+    The order contract cannot be evaluated by this library (Ergo 6.0 operations), so the
+    transaction is reduced against a stand-in: a box with the same value and tokens that
+    is plainly the owner's. On the refund path the contract reduces to exactly the
+    owner's key, so the result is the same; only the box id differs, and it is put back.
+    The order sits at input 0, where the contract can only be refunded, never executed.
+    """
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix, Token, TokenId
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder, TxId
+    from ergo_lib_python.wallet import BoxSelection
+
+    cfg = req["cfg"]
+    box_id = req_token_id(req.get("order_box"), "order")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    pk = bytes(address.ergo_tree())[1:]
+    fee = miner_fee(cfg)
+    raw = explorer(cfg, "boxes/" + box_id)
+    if not raw or raw.get("spentTransactionId"):
+        raise SwapError("This order is no longer open. It was filled or already cancelled.")
+    order = _ld_order_view(raw, pk)
+    if not order:
+        raise SwapError("This is not an open order of this address.")
+    value = int(raw["value"])
+    toks = {a["tokenId"]: int(a["amount"]) for a in raw.get("assets") or []}
+    ctx, height = chain_context(cfg)
+    stand_in = ErgoBox.from_box_candidate(
+        ErgoBoxCandidate(value=value, script=address.ergo_tree(), creation_height=int(raw["creationHeight"]),
+                         tokens=[Token(TokenId(t), a) for t, a in toks.items()]),
+        TxId(bytes.fromhex(raw["transactionId"])), int(raw["index"]))
+
+    chosen, user_erg, user_toks = [], 0, {}
+    if value < fee + change_need(len(toks)):          # an order holding only tokens cannot pay its own way out
+        user_boxes = fetch_user_boxes(cfg, addr_str)
+        need = lambda t: fee + change_need(len(set(t) | set(toks))) - value       # noqa: E731
+        chosen, user_erg, user_toks = select_inputs(user_boxes, need, None, 0)
+    out_toks = dict(user_toks)
+    for t, a in toks.items():
+        out_toks[t] = out_toks.get(t, 0) + a
+    outs = user_outputs(address, height, out_toks, value + user_erg - fee)
+    inputs = [stand_in] + chosen
+    unsigned = TxBuilder(BoxSelection(inputs, []), outs, height, fee, address).build()
+    data = bytes(ReducedTransaction.from_unsigned_tx(unsigned, inputs, [], ctx))
+    fake, real = bytes(stand_in.box_id), bytes.fromhex(box_id)
+    if data.count(fake) != 1:
+        raise SwapError("The cancellation could not be prepared. Please try again.")
+    data = data.replace(fake, real)
+    final = ReducedTransaction.from_bytes(data)       # must still be a well-formed reduced transaction
+    spent = json.loads(final.unsigned_tx().json())
+    own = bytes(address.ergo_tree()).hex()
+    if spent["inputs"][0]["boxId"] != box_id or len(spent["outputs"]) < 2 \
+            or any(o["ergoTree"] != own for o in spent["outputs"][:-1]):
+        raise SwapError("The cancellation could not be prepared. Please try again.")
+    return {"reduced_tx": base64.urlsafe_b64encode(data).decode("ascii"), "tx_id": hexid(final.unsigned_tx().id),
+            "address": addr_str, "from": order["from"], "amount": order["amount"], "value": str(value),
+            "miner_fee": str(fee)}
+
+
+def cmd_ldstatus(req):
+    """What happened to an order this app placed.
+    states: pending | failed | unknown (the placing transaction) | open | filled | cancelled"""
+    cfg = req["cfg"]
+    tx_id = req_token_id(req.get("tx_id"), "transaction")
+    watch = req_token_id(req.get("watch_box"), "transaction")
+    order_box = req_token_id(req.get("order_box"), "order")
+    address = req.get("address")
+    tx = _tx_or_none(cfg, tx_id)
+    if tx and tx.get("inclusionHeight"):
+        b = explorer(cfg, "boxes/" + order_box) or {}
+        spent_by = b.get("spentTransactionId")
+        if not spent_by:
+            return {"state": "open"}
+        stx = _tx_or_none(cfg, spent_by) or {}
+        ins, outs = stx.get("inputs") or [], stx.get("outputs") or []
+        pool_first = bool(ins) and any(a.get("tokenId") == LD_POOL_NFT for a in ins[0].get("assets") or [])
+        if pool_first and len(outs) >= 2:
+            reward = outs[1]                  # the order contract fixes the owner's reward at output 1
+            if req.get("to") == ERG_ID:
+                got = max(0, int(reward.get("value", 0)) - int(b.get("value", 0)))
+            else:
+                got = next((int(a.get("amount", 0)) for a in reward.get("assets") or []
+                            if a.get("tokenId") == LIT_ID), 0)
+            return {"state": "filled", "received": str(got)}
+        return {"state": "cancelled"}
+    if address:
+        req_address(address)
+        if any(t.get("id") == tx_id for t in mempool_txs(cfg, address)):
+            return {"state": "pending"}
+    b = explorer(cfg, "boxes/" + watch)
+    if b and b.get("spentTransactionId") and b["spentTransactionId"] != tx_id:
+        return {"state": "failed"}
+    return {"state": "unknown"}
+
+
+def cmd_lithosstats(req):
+    """Pool figures from Lithos's own public statistics API, passed through as they are."""
+    res = {}
+    for key, path in (("stats", "/stats"), ("supply", "/supply/lit"), ("blocks", "/blocks")):
+        try:
+            doc = http_json(LITHOS_API + path)
+            if isinstance(doc, dict):
+                res[key] = doc
+        except Exception as e:
+            sys.stderr.write("sigmaswap.py lithosstats: %s: %s: %s\n" % (path, type(e).__name__, str(e)[:160]))
+    if "stats" not in res:
+        raise SwapError("Lithos is not answering right now. Please try again.")
+    if "blocks" in res:
+        res["blocks"] = (res["blocks"].get("blocks") or [])[:8]
+    return res
+
+
+def cmd_lithosminer(req):
+    """A miner address's recent Lithos activity, from its own transactions on the chain.
+
+    payout:  a rollup at the Payout contract paid this address          (net ERG and LIT)
+    found:   this address found a block (the finder's share when a collateral box is spent)
+    proof:   this address submitted a share proof to a rollup           (its cost)
+    """
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    from ergo_lib_python.chain import NetworkPrefix
+    addr = address.to_str(NetworkPrefix.Mainnet)
+
+    def held(boxes, token=None):
+        mine = [b for b in boxes if b.get("address") == addr]
+        if token is None:
+            return sum(int(b.get("value", 0)) for b in mine)
+        return sum(int(a.get("amount", 0)) for b in mine for a in b.get("assets") or [] if a.get("tokenId") == token)
+
+    events, scanned, oldest, total = [], 0, 0, 0
+    for offset in (0, 100):          # the full format is needed (who the other boxes belong to), about 2 MB a page
+        page = explorer(cfg, "addresses/%s/transactions?limit=100&offset=%d"
+                        % (urllib.parse.quote(addr, safe=""), offset), 40) or {}
+        items = page.get("items") or []
+        total = int(page.get("total") or 0)
+        for t in items:
+            scanned += 1
+            ins, outs = t.get("inputs") or [], t.get("outputs") or []
+            oldest = int(t.get("timestamp") or 0) // 1000 or oldest
+            if not ins:
+                continue
+            first = ins[0]
+            if first.get("address") == LITHOS_PAYOUT_ADDRESS:
+                kind = "payout"
+            elif any(a.get("tokenId") == LITHOS_COLLATERAL_TOKEN for a in first.get("assets") or []):
+                kind = "found"
+            elif first.get("address") == LITHOS_HOLDING_ADDRESS:
+                kind = "proof"
+            else:
+                continue
+            erg, lit = held(outs) - held(ins), held(outs, LIT_ID) - held(ins, LIT_ID)
+            # a block somebody else found can pay this address as lender or bidder: only the finder
+            # receives the finder's LIT with nothing of their own going in
+            if kind == "found" and not (lit > 0 and held(ins) == 0):
+                continue
+            events.append({"kind": kind, "erg": str(erg), "lit": str(lit), "ts": int(t.get("timestamp") or 0) // 1000,
+                           "height": int(t.get("inclusionHeight") or 0), "tx": t.get("id")})
+        if len(items) < 100:
+            break
+    return {"address": addr, "events": events[:400], "scanned": scanned, "total": total, "since": oldest}
+
+
 # ------------------------------------------------------------ SigmaStats ----
 # sigmastats/: network figures, a portfolio view and price alerts. Read-only.
 
@@ -2514,6 +3015,8 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions,
             "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild,
             "netstats": cmd_netstats, "portfolio": cmd_portfolio,
+            "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
+            "ldstatus": cmd_ldstatus, "lithosstats": cmd_lithosstats, "lithosminer": cmd_lithosminer,
             "szcoins": cmd_szcoins, "szquote": cmd_szquote, "szorder": cmd_szorder, "szstatus": cmd_szstatus}
 
 

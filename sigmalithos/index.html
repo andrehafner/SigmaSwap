@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaLithos</title>
+<meta name="description" content="The Lithos mining pool in your Ergo wallet: pool dashboard, your payouts, and LIT trading.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaLithos</h1>
+        <p class="sub">The Lithos mining pool, in your wallet</p>
+    </div>
+</header>
+<main>
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaLithos is a Mosaik dApp: it runs inside the Ergo wallet app.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Choose "Pool dashboard", "My mining" or "Trade LIT".</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaLithos dApp address">
+            <button id="copyApp" type="button">Copy</button>
+        </div>
+    </section>
+    <section class="card">
+        <h2>Good to know</h2>
+        <ul class="plain">
+            <li><strong>Independent.</strong> This app is not made by the Lithos project. Lithos itself is at lithosprotocol.org.</li>
+            <li><strong>Pool dashboard.</strong> Hashrate, blocks, what mining on Lithos pays, the collateral market and the LIT token, as Lithos publishes them.</li>
+            <li><strong>My mining.</strong> What a mining address received from Lithos lately, read from the blockchain. It does not connect to, set up or control a miner.</li>
+            <li><strong>Trade LIT.</strong> Buy or sell LIT on LithosDex with an order. A Lithos miner fills it at the pool price, never below your minimum, usually within an hour or so; until then you can cancel it.</li>
+            <li><strong>Small market.</strong> LIT is thinly traded. Large trades move the price a lot, and an order can wait a long time.</li>
+        </ul>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

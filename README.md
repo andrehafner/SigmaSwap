@@ -1,6 +1,6 @@
 # SigmaSwap
 
-Five small apps for the [Ergo](https://ergoplatform.org) blockchain that run **inside the Ergo wallet
+Six small apps for the [Ergo](https://ergoplatform.org) blockchain that run **inside the Ergo wallet
 app** (as [Mosaik](https://github.com/MrStahlfelge/mosaik) dApps). You fill in a form in the wallet,
 the app prepares a transaction, and your wallet shows it and signs it.
 
@@ -11,6 +11,7 @@ the app prepares a transaction, and your wallet shows it and signs it.
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
 | **SigmaBridge** | Take funds out of Ergo: ERG and tokens to other chains over the Rosen bridge, or ERG sold for another coin through the Swapuz exchange | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 | **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
+| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, and buying or selling LIT on LithosDex | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -25,7 +26,7 @@ address in a browser shows a short description page.
 - Start with small amounts.
 - There is no warranty of any kind, and the authors accept no liability for losses.
 - It is an independent project. It is not affiliated with or endorsed by ErgoDEX, the Rosen bridge,
-  Lighthouse or the Ergo Platform.
+  Lithos, Swapuz, Lighthouse or the Ergo Platform.
 
 ### Always read what your wallet shows you
 
@@ -53,6 +54,9 @@ app, do not sign it.
 - **Swapuz is a custodial exchange, not a bridge.** It holds your ERG until it pays out the other coin. The
   rate shown is an estimate, there is a high minimum, and Swapuz can put an exchange on hold and ask for
   identity documents. Problems with an exchange are between you and Swapuz (support@swapuz.com).
+- **LIT orders wait for a Lithos miner.** An order on LithosDex is filled only in a block a Lithos miner
+  mines, on average about every 45 minutes and sometimes much later, at the pool price then and never below
+  your minimum. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
 
@@ -87,7 +91,7 @@ It is a set of Perl CGI scripts with one Python helper (using
 
 | Path | Purpose |
 |---|---|
-| `api.pl`, `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/` | The five apps (Mosaik views and ErgoPay endpoints) |
+| `api.pl`, `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/`, `sigmalithos/` | The six apps (Mosaik views and ErgoPay endpoints) |
 | `sigmaswap.py` | All blockchain logic: quotes, transaction building, contract checks, the order bot |
 | `AppConfig.pm`, `MosaikKit.pm` | Shared configuration and Mosaik helpers |
 | `deploy/` | Apache include and the bot's systemd units |
