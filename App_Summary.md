@@ -18,6 +18,8 @@
 - **SigmaLP** (`sigmalp/`): add and remove liquidity on the same pools, one direct transaction each.
 - **SigmaBridge** (`sigmabridge/`): send ERG and tokens out of Ergo to Cardano, Ethereum, BNB Chain, Bitcoin Runes,
   Bitcoin, Dogecoin or Firo over the Rosen bridge (an independent project). The app builds Rosen's "lock" transaction.
+- **SigmaBridge, Swapuz option**: sells ERG for another coin through Swapuz (swapuz.com), a custodial exchange. The
+  app opens an order with Swapuz and builds a plain payment of the ERG to that order's deposit address.
 - **SigmaStats** (`sigmastats/`): read-only. Network figures (explorer), a portfolio view of any address valued at
   ErgoDex pool prices, and price alerts. It builds no transactions and asks for no signature.
 - **Routes through ERG** (SigmaSwap, direct screen): two tokens with no shared pool are swapped A → ERG → B with one
@@ -52,6 +54,11 @@
 - **SigmaMint uploads** — NOT stored here. A file is spooled to `CACHE_DIR/tmp/` while it is checked
   and sent to Lighthouse, then deleted. `CACHE_DIR/mint-limits.json` holds upload counters and, for
   the current day only, a salted hash of each uploader's IP address (no raw addresses). **Low**.
+- **Swapuz exchanges** — in the transaction note (`CACHE_DIR/tx/`, deleted after two days): the user's Ergo address,
+  the payout coin, network, payout address and memo on the other chain, the amount, Swapuz's order id and deposit
+  address. The payout address is not on the Ergo chain, so this is the one place the service links an Ergo address
+  to an address elsewhere. The same details are sent to Swapuz, which keeps them under its own policy. **Low to
+  moderate**: no names or accounts, but a cross-chain link between two addresses.
 - **Price alerts** — `CACHE_DIR/alerts/<hash>.json` (asset id, direction, price, time; at most 10) and
   `<hash>.hits` (alerts reached), one pair per wallet installation. `<hash>` is a hash of the random
   installation id the wallet sends; no address, no personal data. Removed when the last alert is removed. **Low**.
@@ -149,6 +156,14 @@
   pool A accepts it, then simulates the order's execution against pool B and checks the order parses back as the
   user's own with the agreed amount and minimum. Both pools must be on the published list; the minimum may not be
   more than 10 % below the current quote. The order is registered for the bot and tracked like any order.
+- **SigmaBridge via Swapuz**: `POST ?action=szpreview` → `szquote` asks Swapuz for a floating-rate estimate and stores
+  a draft bound to the user's address. ErgoPay → `szorder`: selects the user's inputs first, then `POST /home/v1/order`
+  at Swapuz (refund address = the user's), and accepts the answer only if the order id is well-formed, the coins,
+  networks, amount and payout address are the ones asked, the order is waiting for payment, it needs no deposit memo,
+  and the deposit address parses as a mainnet P2PK Ergo address other than the user's. The estimate must not be more
+  than 3 % below the preview. Then `[user boxes] → [deposit address (amount), user change, miner fee]`, read back and
+  compared. A second fetch re-uses the same order while Swapuz still waits for it. Status reads Swapuz's order by id
+  and is shown only if the answer carries that id and deposit address.
 - **SigmaStats**: `GET sigmastats/api.pl` → `netstats` (explorer) + pool list. `POST ?action=portq` → `portfolio`
   reads the address's confirmed balance; tokens are valued only if they are on the published pool list (names of
   all other tokens are shown with their id and marked unverified). `POST ?action=alertset` stores an alert; the
@@ -185,6 +200,9 @@
 - **Lighthouse** (`upload.lighthouse.storage`, `gateway.lighthouse.storage`): SigmaMint stores
   uploaded NFT media there with the operator's API key. The wallet loads the preview picture
   from the gateway directly. Files on IPFS are public and effectively permanent.
+- **Swapuz** (third party, `api.swapuz.com`, key in `SWAPUZ_API_KEY`): coin list, rate, order creation, order status.
+  Custodial: it receives the user's ERG and pays out another coin. It receives the user's Ergo address (as refund
+  address), the payout address and the amount.
 - **Rosen bridge** (third party): SigmaBridge sends funds to Rosen's lock address; delivery on the
   other chain is done by Rosen's watchers and guards. Lock address, fee-table token and box format
   were taken from Rosen's public code and confirmed against live transfers on-chain.
@@ -275,6 +293,12 @@
 - **Price alerts are best effort.** They use the pool list from the ErgoDex API, checked once a minute, and reach
   the user only when the wallet next asks for notifications. They are not a stop-loss. Not yet seen in a real wallet.
 - **SigmaStats prices are pool prices**, and the ERG price is its SigUSD pool price, which can differ from exchanges.
+- **Swapuz is custodial and outside this service's control.** After the payment, completion, rate, holds for identity
+  checks and refunds are Swapuz's. The app's checks ensure the ERG goes to the deposit address Swapuz named for an
+  order matching the request; they cannot ensure Swapuz pays. A compromised or wrong Swapuz answer that still names
+  a valid Ergo address would be paid. Its API answered some requests with a canned sample order depending on the
+  client's User-Agent, which is why every answer is matched to the order id. No Swapuz exchange from this app has
+  been funded: orders were opened and payments built against the live API, none broadcast.
 - **SigmaBridge: funds leave Ergo irreversibly.** A wrong (but well-formed) target address, or an
   address the user does not control, loses the funds. Checksums catch typos, not wrong addresses.
 - **SigmaBridge depends on Rosen**, an independent bridge: delivery time, availability and the

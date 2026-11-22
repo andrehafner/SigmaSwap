@@ -158,7 +158,7 @@ If `deploy/sigmaswap.conf` changed, copy it again (step 5). If a Mosaik screen c
 2. **The cache directory must stay outside anything Apache serves.** It holds `mint-secret` (the
    key that signs upload sessions), upload counters, transaction notes and notification lists.
    `/var/lib/sigmaswap` is correct; never point `CACHE_DIR` into `/usr/lib/cgi-bin` or `/var/www`.
-3. **The settings file** holds the Lighthouse key: `640 root:www-data` (`redeploy.sh` sets it).
+3. **The settings file** holds the Lighthouse and Swapuz keys: `640 root:www-data` (`redeploy.sh` sets it).
 4. **Lighthouse uploads use your account.** The limits and the kill switch (`MINT_UPLOADS=0`) are
    in `sigmaswap.env.example`.
 
@@ -171,7 +171,15 @@ started in the wallet. The real test is in the wallet: Mint an NFT → Choose fi
 "File added" → back in the wallet, Preview shows the picture. Files are spooled to `tmp/` in the
 cache directory while they are checked and relayed, then deleted.
 
-**SigmaBridge.** The Rosen lock address and fee-table token are built into `sigmaswap.py`. When
+**SigmaBridge, Swapuz option.** Set `SWAPUZ_API_KEY` in the settings file (the key from your Swapuz partner
+account) and make sure the server reaches `api.swapuz.com`:
+`curl -sS -m 15 'https://api.swapuz.com/api/home/getLimits?coin=ERG'` must answer with a `minAmount`. Without
+the key the start screen shows Swapuz as not available and everything else works. The coin list is cached for
+ten minutes in `swapuz-coins.json`. An order is opened with Swapuz only when a wallet fetches the transaction
+to sign; an order nobody pays simply expires there. `error.log` records the Swapuz order id and the payment
+transaction id for each one (`sigmabridge: swapuz order …`), which is what Swapuz support asks for.
+
+**SigmaBridge, Rosen option.** The Rosen lock address and fee-table token are built into `sigmaswap.py`. When
 Rosen upgrades its contracts the app refuses to bridge by itself ("The bridge is unavailable right
 now"), because it requires recent activity at the lock address and a readable fee table. To
 switch before a code update, set `ROSEN_LOCK_ADDRESS` / `ROSEN_MINFEE_NFT` in the settings file,

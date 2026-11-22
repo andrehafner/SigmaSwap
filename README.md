@@ -9,7 +9,7 @@ the app prepares a transaction, and your wallet shows it and signs it.
 | **SigmaSwap** | Swap ERG and tokens on the ErgoDEX liquidity pools: direct swaps, orders, limit orders at a price you set, and token-to-token routes through ERG | `https://my.ergoport.dev/cgi-bin/sigmaswap/` |
 | **SigmaLP** | Add and remove liquidity on the same pools | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalp/` |
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
-| **SigmaBridge** | Send ERG and tokens from Ergo to other chains over the Rosen bridge | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
+| **SigmaBridge** | Take funds out of Ergo: ERG and tokens to other chains over the Rosen bridge, or ERG sold for another coin through the Swapuz exchange | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 | **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
@@ -50,6 +50,9 @@ app, do not sign it.
 - **Liquidity providers can lose value** compared with simply holding, when prices move.
 - **Bridge transfers go to the address you type.** If it is wrong, or not yours, the funds are lost.
   The bridge also has a high minimum, because its fees are fixed amounts.
+- **Swapuz is a custodial exchange, not a bridge.** It holds your ERG until it pays out the other coin. The
+  rate shown is an estimate, there is a high minimum, and Swapuz can put an exchange on hold and ask for
+  identity documents. Problems with an exchange are between you and Swapuz (support@swapuz.com).
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
 
@@ -68,6 +71,9 @@ app, do not sign it.
 - **Minting** follows Ergo's token standard (EIP-4). NFT files are stored on IPFS through Lighthouse.
 - **Bridging** builds the same "lock" transaction the Rosen web app builds, with fees read from
   Rosen's on-chain fee table. Rosen, an independent project, delivers the funds on the other chain.
+- **Swapuz exchanges** open an order with Swapuz when you sign, then pay your ERG to the deposit address Swapuz
+  gives for that order. The app checks that the order matches what you asked and that the deposit address is a
+  normal Ergo address before it builds the payment.
 - Before a transaction reaches your wallet, the pool and order contracts involved are evaluated
   against it. One that a contract would reject is never handed over.
 

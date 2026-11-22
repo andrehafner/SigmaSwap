@@ -2121,6 +2121,255 @@ def cmd_status(req):
     return {"state": "unknown"}
 
 
+# ---------------------------------------------------------------- Swapuz ----
+# SigmaBridge's second way out of Ergo: Swapuz (swapuz.com), a custodial instant
+# exchange. The user sends ERG to a deposit address Swapuz gives for one order, and
+# Swapuz pays another coin to the address the user named. Unlike Rosen this is a
+# company holding the funds in between, so everything it answers is checked before
+# a transaction is built from it, above all the deposit address.
+
+SWAPUZ_API = "https://api.swapuz.com/api"
+SWAPUZ_MAX_RATE_DROP_BPS = 300      # refuse an order whose estimate is this far below the preview
+
+
+def _sz_text(v, limit=80):
+    return "".join(ch for ch in v if ch.isprintable())[:limit] if isinstance(v, str) else ""
+
+
+def _sz_code(v):
+    """A coin or network code as Swapuz writes it, or None."""
+    import re
+    return v if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9._\-]{1,24}", v) else None
+
+
+def swapuz_call(cfg, path, body=None, timeout=HTTP_TIMEOUT):
+    """-> the `result` of a Swapuz API answer. Numbers are kept exact (Decimal).
+    A refusal with a message from Swapuz (below the minimum, pair closed) is passed on."""
+    import decimal
+    headers = {"Accept": "application/json", "User-Agent": "sigmaswap/1.0"}
+    key = cfg.get("swapuz_api_key") or ""
+    if key:
+        headers["Api-key"] = key
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(SWAPUZ_API + path, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read(4 * 1024 * 1024)
+    except urllib.error.HTTPError as e:
+        raw = e.read(64 * 1024)
+    try:
+        doc = json.loads(raw.decode("utf-8"), parse_float=decimal.Decimal)
+    except ValueError:
+        raise SwapError("Swapuz is not answering right now. Please try again.")
+    if not isinstance(doc, dict) or doc.get("status") != 200 or doc.get("result") is None:
+        msg = _sz_text(doc.get("message") if isinstance(doc, dict) else "", 200) \
+            or _sz_text(doc.get("result") if isinstance(doc, dict) else "", 200)
+        raise SwapError("Swapuz: " + msg if msg else "Swapuz could not do this right now. Please try again.")
+    return doc["result"]
+
+
+def _sz_dec(v):
+    """A Swapuz number as an exact, plain decimal string ("0.001699"), or None."""
+    import decimal
+    try:
+        d = decimal.Decimal(str(v))
+    except (decimal.InvalidOperation, ValueError):
+        return None
+    if not d.is_finite() or d < 0:
+        return None
+    return format(d.normalize(), "f")
+
+
+def _erg_text(nano):
+    return ("%d.%09d" % (nano // 10 ** 9, nano % 10 ** 9)).rstrip("0").rstrip(".")
+
+
+def cmd_szcoins(req):
+    """Coins Swapuz can pay out, reduced to what the form needs. The names are theirs."""
+    coins = swapuz_call(req["cfg"], "/home/v1/coins", timeout=60)
+    out, erg_ok = [], False
+    for c in coins if isinstance(coins, list) else []:
+        try:
+            code = _sz_code(c.get("shortName"))
+            nets = []
+            for n in c.get("network") or []:
+                ncode = _sz_code(n.get("shortName"))
+                if not ncode or not n.get("isActive"):
+                    continue
+                if code == "ERG" and ncode == "ERGO" and n.get("isDeposit"):
+                    erg_ok = True
+                if not n.get("isWithdraw"):
+                    continue
+                rx, mrx = n.get("regexAddress"), n.get("memoRegex")
+                nets.append({"s": ncode, "n": _sz_text(n.get("fullName") or n.get("name")) or ncode,
+                             "rx": rx if isinstance(rx, str) and 0 < len(rx) <= 300 else "",
+                             "memo": bool(n.get("isMemo")),
+                             "mrx": mrx if isinstance(mrx, str) and 0 < len(mrx) <= 200 else "",
+                             "fee": _sz_dec(n.get("withdrawFee")) or "0", "def": bool(n.get("isDefault"))})
+            if code and code != "ERG" and nets:
+                rating = c.get("rating")
+                out.append({"c": code, "n": _sz_text(c.get("name")) or code,
+                            "r": rating if isinstance(rating, int) and rating > 0 else 10 ** 6, "nets": nets[:40]})
+        except (AttributeError, TypeError):
+            continue
+    if not out:
+        raise SwapError("Swapuz is not answering right now. Please try again.")
+    out.sort(key=lambda c: (c["r"], c["c"]))
+    return {"coins": out[:1500], "erg_ok": erg_ok}
+
+
+def _sz_rate(cfg, to, net, amount):
+    q = urllib.parse.urlencode({"from": "ERG", "to": to, "amount": _erg_text(amount), "fromNetwork": "ERGO",
+                                "toNetwork": net, "mode": "float"})
+    r = swapuz_call(cfg, "/home/v1/rate/?" + q)
+    out = _sz_dec(r.get("result")) if isinstance(r, dict) else None
+    if out is None or out == "0":
+        raise SwapError("Swapuz has no rate for this right now.")
+    return {"out": out, "withdraw_fee": _sz_dec(r.get("withdrawFee")) or "0",
+            "min": _sz_dec(r.get("minAmount")) or "0", "max": _sz_dec(r.get("maxAmount")) or "0"}
+
+
+def cmd_szquote(req):
+    """What Swapuz would pay for `amount` nanoERG right now (floating rate, an estimate)."""
+    cfg = req["cfg"]
+    to, net = _sz_code(req.get("to")), _sz_code(req.get("net"))
+    if not to or not net:
+        raise SwapError("Choose the coin to receive.")
+    res = _sz_rate(cfg, to, net, req_amount(req.get("amount"), "amount"))
+    if req.get("address"):
+        req_address(req["address"])
+        res["balance"] = _balance(cfg, req["address"], ERG_ID)
+    return res
+
+
+def _sz_order_view(r):
+    """The fields of a Swapuz order we rely on, or None when it is not shaped like one."""
+    if not isinstance(r, dict):
+        return None
+    try:
+        return {"uid": r.get("uid"), "from": (r.get("from") or {}).get("shortName"), "to": (r.get("to") or {}).get("shortName"),
+                "from_net": r.get("addressFromNetwork"), "to_net": r.get("addressToNetwork"),
+                "deposit": r.get("addressFrom"), "dest": r.get("addressTo"), "amount": _sz_dec(r.get("amount")),
+                "out": _sz_dec(r.get("amountResult")), "status": r.get("status"), "expires": _sz_text(r.get("finishPayment"), 40),
+                "refund": r.get("addressRefund"), "aml": bool(r.get("amlError")), "memo_from": r.get("memoFrom") or r.get("depositMemo"),
+                "w_tx": _sz_text(r.get("wTxId"), 120), "d_tx": _sz_text(r.get("dTxId"), 120)}
+    except AttributeError:
+        return None
+
+
+def cmd_szorder(req):
+    """Open (or re-use) the Swapuz order for one previewed exchange and build the payment to it.
+
+    Called when the wallet fetches the transaction. Nothing Swapuz answers is taken on
+    trust: the order must be ours (id, coins, networks, amount, payout address) and
+    its deposit address must be an ordinary Ergo mainnet address that is not the
+    user's own. Only then is `amount` sent there, in a plain payment transaction.
+    """
+    import decimal
+    import re
+    from ergo_lib_python.chain import ErgoBoxCandidate, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+
+    cfg = req["cfg"]
+    if not cfg.get("swapuz_api_key"):
+        raise SwapError("Swapuz is not set up on this server.")
+    to, net = _sz_code(req.get("to")), _sz_code(req.get("net"))
+    dest, memo = req.get("dest"), req.get("memo") or None
+    amount = req_amount(req.get("amount"), "amount")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    if not to or not net or not isinstance(dest, str) or not re.fullmatch(r"[A-Za-z0-9:._\-]{10,130}", dest) \
+            or (memo is not None and not (isinstance(memo, str) and re.fullmatch(r"[A-Za-z0-9:._\-]{1,120}", memo))):
+        raise SwapError("Invalid exchange request.")
+    fee = miner_fee(cfg)
+
+    # funds first: do not open an order the address cannot pay for
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: amount + fee + change_need(len(toks)), None, 0)
+
+    known = req.get("order") if isinstance(req.get("order"), dict) else None
+    order = None
+    if known and isinstance(known.get("uid"), str) and re.fullmatch(r"[A-Za-z0-9\-]{6,60}", known["uid"]):
+        # the wallet asked before: the same order while Swapuz still waits for its payment
+        seen = _sz_order_view(swapuz_call(cfg, "/order/uid/" + known["uid"]))
+        if seen and seen["uid"] == known["uid"] and seen["deposit"] == known.get("deposit") and seen["status"] == 0:
+            order = seen
+    if order is None:
+        est = _sz_rate(cfg, to, net, amount)
+        floor = req.get("min_out")
+        if isinstance(floor, str) and _sz_dec(floor) is not None \
+                and decimal.Decimal(est["out"]) < decimal.Decimal(floor):
+            raise SwapError("The Swapuz rate dropped since the preview. Please preview again.")
+        body = {"from": "ERG", "fromNetwork": "ERGO", "to": to, "toNetwork": net, "address": dest,
+                "amount": float(_erg_text(amount)), "modeCurs": "float", "addressRefund": addr_str}
+        if isinstance(req.get("uuid"), str) and re.fullmatch(r"[0-9a-f\-]{32,36}", req["uuid"]):
+            body["uuid"] = req["uuid"]
+        if memo:
+            body["memo"] = memo
+        order = _sz_order_view(swapuz_call(cfg, "/home/v1/order", body, timeout=60))
+
+    problem = None
+    if not order or not isinstance(order["uid"], str) or not re.fullmatch(r"[A-Za-z0-9\-]{6,60}", order["uid"]):
+        problem = "no order id"
+    elif order["from"] != "ERG" or order["from_net"] != "ERGO" or order["to"] != to or order["to_net"] != net:
+        problem = "other coins or networks than asked"
+    elif order["dest"] != dest:
+        problem = "another payout address than asked"
+    elif order["amount"] is None or decimal.Decimal(order["amount"]) != decimal.Decimal(_erg_text(amount)):
+        problem = "another amount than asked"
+    elif order["status"] != 0:
+        problem = "order not waiting for payment"
+    elif order["memo_from"]:
+        problem = "a deposit memo, which an Ergo payment cannot carry"
+    if problem:
+        sys.stderr.write("sigmaswap.py swapuz: order refused: %s\n" % problem)
+        raise SwapError("Swapuz answered with an order that does not match your request. Nothing was sent. Please try again.")
+    try:
+        deposit = req_address(order["deposit"])
+    except SwapError:
+        sys.stderr.write("sigmaswap.py swapuz: order %s has no usable Ergo deposit address\n" % order["uid"])
+        raise SwapError("Swapuz did not give a usable Ergo deposit address. Nothing was sent.")
+    deposit_str = deposit.to_str(NetworkPrefix.Mainnet)
+    if deposit_str == addr_str:
+        raise SwapError("Swapuz did not give a usable Ergo deposit address. Nothing was sent.")
+
+    ctx, height = chain_context(cfg)
+    pay = ErgoBoxCandidate(value=amount, script=deposit.ergo_tree(), creation_height=height)
+    change = user_outputs(address, height, dict(user_toks), user_erg - amount - fee)
+    unsigned = TxBuilder(BoxSelection(chosen, []), [pay] + change, height, fee, address).build()
+    built = json.loads(unsigned.json())["outputs"][0]
+    if built["ergoTree"] != bytes(deposit.ergo_tree()).hex() or int(built["value"]) != amount or built.get("assets"):
+        raise SwapError("The payment could not be prepared. Please try again.")
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    return {
+        "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
+        "tx_id": hexid(unsigned.id), "address": addr_str, "watch_box": hexid(chosen[0].box_id),
+        "uid": order["uid"], "deposit": deposit_str, "amount": str(amount), "out": order["out"] or "0",
+        "expires": order["expires"], "refund_set": order["refund"] == addr_str, "miner_fee": str(fee),
+    }
+
+
+def cmd_szstatus(req):
+    """Where a Swapuz order stands. Their numbers: 0 waiting for the payment, 1-5 in
+    progress, 6 completed, 10 overdue."""
+    import re
+    uid = req.get("uid")
+    if not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9\-]{6,60}", uid):
+        raise SwapError("Unknown exchange.")
+    o = _sz_order_view(swapuz_call(req["cfg"], "/order/uid/" + uid))
+    # an answer about some other order must never be shown as this one
+    if not o or o["uid"] != uid or o["deposit"] != req.get("deposit"):
+        raise SwapError("Swapuz is not answering right now. Please try again.")
+    return {"status": o["status"] if isinstance(o["status"], int) else -1, "out": o["out"] or "0",
+            "aml": o["aml"], "w_tx": o["w_tx"], "d_tx": o["d_tx"]}
+
+
 # ------------------------------------------------------------ SigmaStats ----
 # sigmastats/: network figures, a portfolio view and price alerts. Read-only.
 
@@ -2264,7 +2513,8 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "mint": cmd_mint, "upload": cmd_upload,
             "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions,
             "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild,
-            "netstats": cmd_netstats, "portfolio": cmd_portfolio}
+            "netstats": cmd_netstats, "portfolio": cmd_portfolio,
+            "szcoins": cmd_szcoins, "szquote": cmd_szquote, "szorder": cmd_szorder, "szstatus": cmd_szstatus}
 
 
 def main():

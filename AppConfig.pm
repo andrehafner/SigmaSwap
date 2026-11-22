@@ -92,6 +92,7 @@ sub chain {
         lighthouse_upload_url => cfg('LIGHTHOUSE_UPLOAD_URL', 'https://upload.lighthouse.storage/api/v0/add'),
         rosen_lock_address    => cfg('ROSEN_LOCK_ADDRESS', ''),     # empty = the address built into sigmaswap.py
         rosen_minfee_nft      => cfg('ROSEN_MINFEE_NFT',   ''),
+        swapuz_api_key        => cfg('SWAPUZ_API_KEY', ''),         # SECRET; empty = Swapuz switched off
     };
     my $python = cfg('PYTHON', "$ROOT/venv/bin/python");
     my $script = "$ROOT/sigmaswap.py";
