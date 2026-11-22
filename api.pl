@@ -37,7 +37,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 11;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 12;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -378,12 +378,16 @@ sub main_view {
         child(token_dropdown('from', $reg, \@from_ids, $s->{from}, 'Select token', $sort), align => 'JUSTIFY'),
     );
     if ($from) {
+        # ERG is entered in the wallet's own amount field: the user can switch it to their fiat
+        # currency, and the other of the two is shown underneath. Its value is nanoERG either way,
+        # so nothing else changes. Without a fiat rate in the wallet it is a plain ERG field.
+        my $is_erg = $from->{id} eq ERG;
         push @form, child(O(
-            type => 'DecimalInputField', id => "amount_$from->{decimals}",
+            type => ($is_erg ? 'FiatOrErgAmountInputField' : 'DecimalInputField'), id => "amount_$from->{decimals}",
             value => defined $s->{amount} ? N($s->{amount}) : undef,
             placeholder => "Amount of $from->{ticker}",
             onValueChanged => 'clearQuote', onImeAction => 'preview', minValue => N(1),
-            imeActionType => 'DONE', scale => N($from->{decimals}),
+            imeActionType => 'DONE', scale => ($is_erg ? undef : N($from->{decimals})),
         ), align => 'JUSTIFY');
         push @form, child(label('Balance: ' . fmt_amount($balance, $from->{decimals}) . " $from->{ticker}",
                                 'BODY2', color => 'SECONDARY'), align => 'END') if defined $balance;
