@@ -25,7 +25,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 3;
+use constant APP_VERSION => 4;
 use constant ERG         => '0' x 64;
 use constant TOLERANCE   => 100;     # basis points the pool may move between preview and signing
 
@@ -84,6 +84,15 @@ sub tinfo {
         : { ticker => "token $short (unlisted)", decimals => 0 };
 }
 sub amt { my ($raw, $t) = @_; return fmt_amount($raw, $t->{decimals}) . " $t->{ticker}" }
+
+# An amount for the screen. A token is shown as a TokenLabel: the wallet adds its own
+# verified/unverified badge and opens the token's details on tap, which a name alone cannot do.
+sub amount_el {
+    my ($id, $raw, $t) = @_;
+    return amt($raw, $t) if $id eq ERG;
+    return O(type => 'TokenLabel', tokenId => $id, tokenName => $t->{ticker},
+             decimals => $t->{decimals} ? N($t->{decimals}) : undef, amount => N($raw), style => 'BODY1BOLD');
+}
 
 sub pool_list {    # [pool id, "ERG / SigUSD"] by liquidity
     my ($reg) = @_;
@@ -276,8 +285,8 @@ sub act_addq {
     my $y   = tinfo($reg, $q->{y}, $q->{y_info});
     my $fee = cfg('MINER_FEE', 1100000) + 0;
     my @rows = (
-        kv_row("You add", amt($q->{x_in}, $x)),
-        kv_row("and", amt($q->{y_in}, $y)),
+        kv_row("You add", amount_el($q->{x}, $q->{x_in}, $x)),
+        kv_row("and", amount_el($q->{y}, $q->{y_in}, $y)),
         kv_row('Your share of the pool', '+' . ($q->{share_bps} >= 1 ? fmt_pct($q->{share_bps}) : 'less than 0.01 %')),
         kv_row('Pool fee you earn a share of', fmt_pct((1000 - $q->{fee_num}) * 10)),
         kv_row('Network fee', fmt_amount($fee, 9) . ' ERG'),
@@ -325,8 +334,9 @@ sub act_posq {
         push @rows, O(type => 'HorizontalRule', vPadding => 'QUARTER_DEFAULT') if $i > 1;
         push @rows,
             child(label("$x->{ticker} / $y->{ticker}", 'BODY1BOLD'), align => 'START'),
-            child(label('Worth now: ' . amt($p->{x_out}, $x) . ' + ' . amt($p->{y_out}, $y)
-                        . ($p->{share_bps} >= 1 ? ' (' . fmt_pct($p->{share_bps}) . ' of the pool)' : ''), 'BODY1'), align => 'START');
+            kv_row('Worth now', amount_el($p->{x}, $p->{x_out}, $x)),
+            kv_row('and', amount_el($p->{y}, $p->{y_out}, $y)),
+            ($p->{share_bps} >= 1 ? kv_row('Your share of the pool', fmt_pct($p->{share_bps})) : ());
         my @buttons;
         for my $pct (25, 50, 100) {
             my $lp = $pct == 100 ? Math::BigInt->new($p->{lp_amount}) : scale($p->{lp_amount}, $pct * 100);
