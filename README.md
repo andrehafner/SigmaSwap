@@ -1,15 +1,16 @@
 # SigmaSwap
 
-Four small apps for the [Ergo](https://ergoplatform.org) blockchain that run **inside the Ergo wallet
+Five small apps for the [Ergo](https://ergoplatform.org) blockchain that run **inside the Ergo wallet
 app** (as [Mosaik](https://github.com/MrStahlfelge/mosaik) dApps). You fill in a form in the wallet,
 the app prepares a transaction, and your wallet shows it and signs it.
 
 | App | What it does | Open in the wallet's dApps section |
 |---|---|---|
-| **SigmaSwap** | Swap ERG and tokens on the ErgoDEX liquidity pools: direct swaps, orders, and limit orders at a price you set | `https://my.ergoport.dev/cgi-bin/sigmaswap/` |
+| **SigmaSwap** | Swap ERG and tokens on the ErgoDEX liquidity pools: direct swaps, orders, limit orders at a price you set, and token-to-token routes through ERG | `https://my.ergoport.dev/cgi-bin/sigmaswap/` |
 | **SigmaLP** | Add and remove liquidity on the same pools | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalp/` |
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
 | **SigmaBridge** | Send ERG and tokens from Ergo to other chains over the Rosen bridge | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
+| **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -40,6 +41,9 @@ app, do not sign it.
 
 - **Token names are not unique.** Anyone can create a token called "SigUSD". The apps show the token
   id when two listed tokens share a name, and your wallet shows its own verified badge. Check it.
+- **A swap between two tokens that share no pool goes through ERG.** You sign once: the first half happens
+  directly and the second half is an order (see the next point). If that order cannot fill at your minimum,
+  what you get back on cancelling is ERG, not the token you started with.
 - **Orders and limit orders are public while they wait.** Other traders can trade ahead of them, so
   you may receive only your minimum. A limit order may never fill; you can cancel it at any time.
 - **Liquidity providers can lose value** compared with simply holding, when prices move.
@@ -58,6 +62,8 @@ app, do not sign it.
   so you can always take them back. A small bot run by this service completes an order once the pool
   can pay its minimum. The bot holds no keys: completing an order is a transaction anyone may send,
   and the contract only allows it to pay you.
+- **Prices in SigmaStats** are ErgoDEX pool prices, not exchange quotes. The ERG price shown is its SigUSD
+  pool price. A price alert is a convenience and can be late or missed: do not rely on it to protect a position.
 - **Minting** follows Ergo's token standard (EIP-4). NFT files are stored on IPFS through Lighthouse.
 - **Bridging** builds the same "lock" transaction the Rosen web app builds, with fees read from
   Rosen's on-chain fee table. Rosen, an independent project, delivers the funds on the other chain.
@@ -74,7 +80,7 @@ It is a set of Perl CGI scripts with one Python helper (using
 
 | Path | Purpose |
 |---|---|
-| `api.pl`, `sigmalp/`, `sigmamint/`, `sigmabridge/` | The four apps (Mosaik views and ErgoPay endpoints) |
+| `api.pl`, `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/` | The five apps (Mosaik views and ErgoPay endpoints) |
 | `sigmaswap.py` | All blockchain logic: quotes, transaction building, contract checks, the order bot |
 | `AppConfig.pm`, `MosaikKit.pm` | Shared configuration and Mosaik helpers |
 | `deploy/` | Apache include and the bot's systemd units |

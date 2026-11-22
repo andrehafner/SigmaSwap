@@ -170,6 +170,7 @@ def cmd_pools(req):
             }
             if x["id"] == ERG_ID:      # ERG locked in the pool, shown next to the token name
                 entry["erg"] = int(x["amount"])
+            entry["xa"], entry["ya"] = str(int(x["amount"])), str(int(y["amount"]))   # reserves, for prices
         except (KeyError, TypeError, ValueError):
             continue
         key = tuple(sorted((x["id"], y["id"])))
@@ -1771,7 +1772,7 @@ def bot_main():
     import os
     env = read_env_file(os.environ.get("APP_ENV_FILE", ""))
     cache = env.get("CACHE_DIR") or ""
-    if (env.get("ORDER_BOT", "1") or "1") == "0" or not cache:
+    if not cache:
         return 0
     cfg = {
         "explorer_url": env.get("EXPLORER_URL") or "https://api.ergoplatform.com",
@@ -1780,9 +1781,19 @@ def bot_main():
         "order_miner_fee": int(env.get("ORDER_MINER_FEE") or 2000000),
         "use_mempool": (env.get("USE_MEMPOOL", "1") or "1") != "0",
     }
-    res = cmd_bot({"cfg": cfg, "dir": os.path.join(cache, "orders")})
-    if res["filled"]:
-        sys.stderr.write("sigmaswap.py bot: checked %d, filled %d\n" % (res["checked"], res["filled"]))
+    if (env.get("ORDER_BOT", "1") or "1") != "0":
+        res = cmd_bot({"cfg": cfg, "dir": os.path.join(cache, "orders")})
+        if res["filled"]:
+            sys.stderr.write("sigmaswap.py bot: checked %d, filled %d\n" % (res["checked"], res["filled"]))
+    if (env.get("PRICE_ALERTS", "1") or "1") != "0":
+        try:
+            cfg["pools_api_url"] = env.get("POOLS_API_URL") or "https://api.ergodex.io/v1/amm/pools/stats"
+            cfg["min_tvl_usd"] = env.get("MIN_TVL_USD") or 100
+            res = cmd_alerts({"cfg": cfg, "dir": os.path.join(cache, "alerts")})
+            if res["hit"]:
+                sys.stderr.write("sigmaswap.py bot: %d price alert(s) reached\n" % res["hit"])
+        except Exception as e:
+            sys.stderr.write("sigmaswap.py bot: price alerts skipped: %s: %s\n" % (type(e).__name__, str(e)[:200]))
     return 0
 
 
@@ -2093,6 +2104,132 @@ def cmd_status(req):
     return {"state": "unknown"}
 
 
+# ------------------------------------------------------------ SigmaStats ----
+# sigmastats/: network figures, a portfolio view and price alerts. Read-only.
+
+def cmd_netstats(req):
+    """Network figures from the explorer. Every part is optional: one slow endpoint must not blank the screen."""
+    cfg = req["cfg"]
+    base = cfg["explorer_url"].rstrip("/")
+    res = {}
+
+    def part(fn):
+        try:
+            fn()
+        except Exception as e:
+            sys.stderr.write("sigmaswap.py netstats: %s: %s\n" % (type(e).__name__, str(e)[:200]))
+
+    def headers():
+        h = (explorer(cfg, "blocks/headers?limit=1") or {}).get("items") or []
+        if h:
+            res["height"], res["block_ts"] = int(h[0]["height"]), int(h[0]["timestamp"]) // 1000
+
+    def stats():
+        st = http_json(base + "/api/v0/stats") or {}
+        b, t, m = st.get("blockSummary") or {}, st.get("transactionsSummary") or {}, st.get("miningCost") or {}
+        res.update({"blocks_24h": int(b.get("total", 0)), "avg_block_ms": int(b.get("averageMiningTime", 0)),
+                    "tx_24h": int(t.get("total", 0)), "difficulty": int(m.get("difficulty", 0)),
+                    "hashrate": int(m.get("hashRate", 0))})
+
+    def info():
+        res["supply"] = str(int((http_json(base + "/api/v0/info") or {}).get("supply", 0)))
+
+    def mempool():
+        res["mempool"] = int((http_json(base + "/api/v0/transactions/unconfirmed?limit=1") or {}).get("total", 0))
+
+    for fn in (headers, stats, info, mempool):
+        part(fn)
+    if "height" not in res:
+        raise SwapError("The Ergo explorer is not answering right now. Please try again.")
+    return res
+
+
+def cmd_portfolio(req):
+    """Confirmed balance of one address: ERG and tokens (names are untrusted on-chain text)."""
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    from ergo_lib_python.chain import NetworkPrefix
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(addr_str, safe="")) or {}
+    toks = []
+    for t in (bal.get("tokens") or [])[:1000]:
+        try:
+            if not is_hex64(t.get("tokenId")) or int(t["amount"]) <= 0:
+                continue
+            a = _asset({"id": t["tokenId"], "ticker": t.get("name"), "decimals": t.get("decimals")})
+            toks.append({"id": a["id"], "name": a["ticker"], "decimals": a["decimals"], "amount": str(int(t["amount"]))})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return {"address": addr_str, "erg": str(int(bal.get("nanoErgs", 0))), "tokens": toks}
+
+
+SIGUSD_ID = "03faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf04"
+
+
+def alert_prices(pools):
+    """{asset id: price as a 1e-9 fixed-point int}. For a token: ERG per 1 token, from its
+    ERG pool. For ERG itself: SigUSD per 1 ERG, from the ERG/SigUSD pool."""
+    prices = {}
+    for p in pools:
+        try:
+            if p["x"]["id"] != ERG_ID:
+                continue
+            xa, ya, dec = int(p["xa"]), int(p["ya"]), int(p["y"]["decimals"])
+            if xa <= 0 or ya <= 0:
+                continue
+            prices[p["y"]["id"]] = xa * 10 ** dec // ya           # nanoERG per whole token = 1e-9 ERG units
+            if p["y"]["id"] == SIGUSD_ID:
+                prices[ERG_ID] = ya * 10 ** (18 - dec) // xa       # 1e-9 SigUSD per whole ERG
+        except (KeyError, TypeError, ValueError):
+            continue
+    return prices
+
+
+def cmd_alerts(req):
+    """One pass over the price alerts (CACHE_DIR/alerts/<installation>.json, written by
+    sigmastats/api.pl). An alert that is reached is appended to <installation>.hits; the
+    alert file itself is never written here, so the two sides cannot overwrite each other."""
+    import os
+    import time
+    directory = req.get("dir") or ""
+    if not os.path.isdir(directory):
+        return {"checked": 0, "hit": 0}
+    pending = []
+    for name in sorted(os.listdir(directory))[:20000]:
+        if not (name.endswith(".json") and len(name) == 37):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            with open(path) as f:
+                alerts = json.load(f).get("alerts") or []
+            done = set()
+            hits_path = path[:-5] + ".hits"
+            if os.path.exists(hits_path):
+                with open(hits_path) as f:
+                    for line in f:
+                        try:
+                            done.add(json.loads(line).get("id"))
+                        except ValueError:
+                            pass
+            for a in alerts[:20]:
+                if a.get("id") not in done and is_hex64(a.get("asset")) and a.get("dir") in ("above", "below"):
+                    pending.append((hits_path, a["id"], a["asset"], a["dir"], int(a["price"])))
+        except Exception as e:
+            sys.stderr.write("sigmaswap.py alerts: %s skipped: %s\n" % (name[:12], type(e).__name__))
+    if not pending:
+        return {"checked": 0, "hit": 0}
+    prices = alert_prices(cmd_pools({"cfg": req["cfg"]})["pools"])
+    hit = 0
+    for hits_path, alert_id, asset, direction, target in pending:
+        now = prices.get(asset)
+        if now is None or not ((direction == "above" and now >= target) or (direction == "below" and now <= target)):
+            continue
+        with open(hits_path, "a") as f:
+            f.write(json.dumps({"id": alert_id, "ts": int(time.time()), "price": str(now)}) + "\n")
+        hit += 1
+    return {"checked": len(pending), "hit": hit}
+
+
 # ------------------------------------------------------------------ main ----
 
 def cmd_health(req):
@@ -2109,7 +2246,8 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "build": cmd_build, "orders": cmd_orders, "refund": cmd_refund, "status": cmd_status,
             "mint": cmd_mint, "upload": cmd_upload,
             "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions,
-            "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild}
+            "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild,
+            "netstats": cmd_netstats, "portfolio": cmd_portfolio}
 
 
 def main():

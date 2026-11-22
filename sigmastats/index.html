@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaStats</title>
+<meta name="description" content="Ergo network figures, your portfolio and price alerts, inside your Ergo wallet.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaStats</h1>
+        <p class="sub">Ergo at a glance, in your wallet</p>
+    </div>
+</header>
+<main>
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaStats is a Mosaik dApp: it runs inside the Ergo wallet app.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Look at the network, open "Portfolio", or set a price alert.</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaStats dApp address">
+            <button id="copyApp" type="button">Copy</button>
+        </div>
+    </section>
+    <section class="card">
+        <h2>Good to know</h2>
+        <ul class="plain">
+            <li><strong>Read-only.</strong> SigmaStats never builds a transaction and never asks you to sign anything.</li>
+            <li><strong>Network.</strong> Block height, block time, hashrate, difficulty and waiting transactions, from the public Ergo explorer.</li>
+            <li><strong>Portfolio.</strong> What an address holds, valued in ERG at the ErgoDex pool prices. The address is looked up, not stored.</li>
+            <li><strong>Price alerts.</strong> Pick ERG or a token and a price. The service checks once a minute and your wallet shows a notice when it is reached.</li>
+            <li><strong>Prices.</strong> They are ErgoDex pool prices, not exchange quotes; the ERG price is its SigUSD pool price.</li>
+        </ul>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

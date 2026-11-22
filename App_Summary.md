@@ -18,6 +18,11 @@
 - **SigmaLP** (`sigmalp/`): add and remove liquidity on the same pools, one direct transaction each.
 - **SigmaBridge** (`sigmabridge/`): send ERG and tokens out of Ergo to Cardano, Ethereum, BNB Chain, Bitcoin Runes,
   Bitcoin, Dogecoin or Firo over the Rosen bridge (an independent project). The app builds Rosen's "lock" transaction.
+- **SigmaStats** (`sigmastats/`): read-only. Network figures (explorer), a portfolio view of any address valued at
+  ErgoDex pool prices, and price alerts. It builds no transactions and asks for no signature.
+- **Routes through ERG** (SigmaSwap, direct screen): two tokens with no shared pool are swapped A → ERG → B with one
+  signature. The first swap is direct; its ERG output is an ordinary ErgoDex order for B, owned by the user's key,
+  which the bot completes. A pool must be output 0 of its transaction, so two pools cannot share one.
 - **Order bot**: a systemd timer runs `sigmaswap.py bot` every minute. It completes orders placed
   through SigmaSwap when the pool can pay their minimum, by broadcasting a transaction that needs
   no key. This is the one place the server sends a transaction to the network itself.
@@ -45,6 +50,12 @@
 - **SigmaMint uploads** — NOT stored here. A file is spooled to `CACHE_DIR/tmp/` while it is checked
   and sent to Lighthouse, then deleted. `CACHE_DIR/mint-limits.json` holds upload counters and, for
   the current day only, a salted hash of each uploader's IP address (no raw addresses). **Low**.
+- **Price alerts** — `CACHE_DIR/alerts/<hash>.json` (asset id, direction, price, time; at most 10) and
+  `<hash>.hits` (alerts reached), one pair per wallet installation. `<hash>` is a hash of the random
+  installation id the wallet sends; no address, no personal data. Removed when the last alert is removed. **Low**.
+- **Network figures** — `CACHE_DIR/netstats.json`, public chain data cached for a minute. **Low**.
+- **Portfolio lookups** — not stored. The address goes to the explorer and into no file. **Low** (public data),
+  but note the web server's access log does not contain it either: it is sent in the request body.
 - **Order registry** — `CACHE_DIR/orders/<order box id>.json`: order box id, owner address, time,
   and once filled the fill transaction id. Removed when the order is filled or cancelled. **Low**.
 - **Notification lists** — `CACHE_DIR/watch/<hash>.json`: per wallet installation (keyed by a hash
@@ -130,6 +141,17 @@
 - **SigmaLP**: `POST sigmalp/api.pl?action=addq|posq` → `lpquote` / `lppositions` read the pool →
   ErgoPay → `lpbuild` builds `[pool, user boxes] → [pool, user, miner fee]` under the pool's own
   deposit/redeem rules, evaluates the pool contract against it, and enforces a 1 % tolerance.
+- **SigmaSwap route through ERG**: preview → two `quote` calls (A→ERG, then ERG→B for the ERG that remains after
+  the order's fee deposit). ErgoPay (`&h=<second pool>`) → `build` mode `hop` builds
+  `[pool A, user boxes] → [pool A, order box (ERG→B, user's key, minimum of B), user change, miner fee]`, proves
+  pool A accepts it, then simulates the order's execution against pool B and checks the order parses back as the
+  user's own with the agreed amount and minimum. Both pools must be on the published list; the minimum may not be
+  more than 10 % below the current quote. The order is registered for the bot and tracked like any order.
+- **SigmaStats**: `GET sigmastats/api.pl` → `netstats` (explorer) + pool list. `POST ?action=portq` → `portfolio`
+  reads the address's confirmed balance; tokens are valued only if they are on the published pool list (names of
+  all other tokens are shown with their id and marked unverified). `POST ?action=alertset` stores an alert; the
+  bot (`cmd_alerts`) compares alerts with pool prices each minute and appends reached ones to the `.hits` file;
+  `GET ?action=notify` reports the newest reached alert to that installation.
 - **SigmaBridge**: `POST sigmabridge/api.pl?action=preview` → `bridgequote` reads Rosen's on-chain
   fee table for the token, validates the target address with that chain's checksum and Rosen's own
   format rules (Cardano bech32 mainnet; Bitcoin `bc1q`; Runes Taproot `bc1p`; EVM hex with EIP-55 when
@@ -245,6 +267,12 @@
   acting on a public blockchain. `ORDER_BOT=0` or disabling the timer stops it; orders then
   wait for ErgoDex's own bots or the owner's cancel.
 - **Limit orders may never fill**, and fill only while the bot runs. They can be cancelled any time.
+- **Routes through ERG are half order.** The second swap waits for a bot and can be front-run down to the user's
+  minimum; if it cannot fill, cancelling returns ERG, not the original token. No route order from this app has been
+  filled on-chain yet: the build was checked against live pools (pool acceptance and a simulated execution) only.
+- **Price alerts are best effort.** They use the pool list from the ErgoDex API, checked once a minute, and reach
+  the user only when the wallet next asks for notifications. They are not a stop-loss. Not yet seen in a real wallet.
+- **SigmaStats prices are pool prices**, and the ERG price is its SigUSD pool price, which can differ from exchanges.
 - **SigmaBridge: funds leave Ergo irreversibly.** A wrong (but well-formed) target address, or an
   address the user does not control, loses the funds. Checksums catch typos, not wrong addresses.
 - **SigmaBridge depends on Rosen**, an independent bridge: delivery time, availability and the

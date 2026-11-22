@@ -8,7 +8,7 @@
 # If your web server runs as a user other than www-data (e.g. apache), change
 # User= and Group= below.
 [Unit]
-Description=SigmaSwap order bot (one pass)
+Description=SigmaSwap order bot and price alerts (one pass)
 After=network-online.target
 Wants=network-online.target
 

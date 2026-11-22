@@ -1,11 +1,11 @@
 # SigmaSwap — Deployment (Debian / Ubuntu, Apache, `/usr/lib/cgi-bin`)
 
-Installs the four apps (SigmaSwap, SigmaLP, SigmaMint, SigmaBridge) from one checkout:
+Installs the five apps (SigmaSwap, SigmaLP, SigmaMint, SigmaBridge, SigmaStats) from one checkout:
 
 | | |
 |---|---|
 | Code | `/usr/lib/cgi-bin/sigmaswap/` |
-| URL | `https://YOUR-HOST/cgi-bin/sigmaswap/` (and `…/sigmalp/`, `…/sigmamint/`, `…/sigmabridge/`) |
+| URL | `https://YOUR-HOST/cgi-bin/sigmaswap/` (and `…/sigmalp/`, `…/sigmamint/`, `…/sigmabridge/`, `…/sigmastats/`) |
 | Settings | `/etc/sigmaswap/sigmaswap.env` |
 | Cache | `/var/lib/sigmaswap/` (writable by the web server, not served) |
 | Logs | `/var/log/apache2/error.log` (lines start with `sigmaswap`) |
@@ -99,9 +99,9 @@ curl -sS "$H/api.pl?action=health"; echo
 #   {"success":1,"helper":"ok","height":19xxxxx,"pools":NN,"base_url":"https://my.ergoport.dev/cgi-bin/sigmaswap"}
 #   base_url must be exactly your public https address.
 
-# C2 the four apps answer with their Mosaik JSON
-for a in "" sigmalp/ sigmamint/ sigmabridge/; do curl -sS "$H/${a}api.pl" | head -c 45; echo; done
-#   {"manifest":{"appName":"SigmaSwap",...   SigmaLP, SigmaMint, SigmaBridge
+# C2 the five apps answer with their Mosaik JSON
+for a in "" sigmalp/ sigmamint/ sigmabridge/ sigmastats/; do curl -sS "$H/${a}api.pl" | head -c 45; echo; done
+#   {"manifest":{"appName":"SigmaSwap",...   SigmaLP, SigmaMint, SigmaBridge, SigmaStats
 
 # C3 web files are served as files (200), source and secrets are not (403)
 for p in / style.css icons/unknown.png sigmamint/ sigmaswap.py AppConfig.pm venv/pyvenv.cfg .git/config README.md; do
@@ -113,13 +113,14 @@ sudo ls -l /var/lib/sigmaswap/          # pools.json appears after C1
 ```
 
 Then, in the Ergo wallet app: **dApps → enter `https://my.ergoport.dev/cgi-bin/sigmaswap/`**, and
-the same with `sigmalp/`, `sigmamint/`, `sigmabridge/` appended.
+the same with `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/` appended.
 
-## 8. Order bot (limit orders)
+## 8. Order bot (limit orders, routes through ERG, price alerts)
 
-Orders, and limit orders in particular, are completed by a small bot: once a minute it looks for
-open SigmaSwap orders and, when the pool can pay an order's minimum, broadcasts the transaction
-that fills it. It holds no keys; filling an order is a transaction anyone may send. Without it,
+Orders are completed by a small bot: once a minute it looks for open SigmaSwap orders and, when
+the pool can pay an order's minimum, broadcasts the transaction that fills it. That covers limit
+orders and the second half of a token-to-token swap through ERG. In the same run it checks
+SigmaStats price alerts against the pool prices (`PRICE_ALERTS=0` switches that part off). It holds no keys; filling an order is a transaction anyone may send. Without it,
 limit orders wait for somebody else's bot.
 
 ```bash
@@ -177,7 +178,12 @@ switch before a code update, set `ROSEN_LOCK_ADDRESS` / `ROSEN_MINFEE_NFT` in th
 taking the values ONLY from Rosen's own release file. `sigmabridge/tokens.json` is refreshed with
 `tools/fetch_bridge_tokens.py`.
 
-**Notifications.** All four apps tell the wallet where to ask for news (`api.pl?action=notify`).
+**SigmaStats.** Read-only: network figures from the explorer (cached for a minute in
+`netstats.json`), a portfolio view, and price alerts. Alerts live in `alerts/` in the cache
+directory, one small file per wallet installation, at most 10 alerts each. Without the bot timer
+(step 8) alerts are never reached.
+
+**Notifications.** All five apps tell the wallet where to ask for news (`api.pl?action=notify`).
 What an installation started is kept in `watch/` in the cache directory. Nothing to install.
 
 **Token logos.** `icons/` are ordinary files in the repository. To add logos for newly listed
