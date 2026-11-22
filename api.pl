@@ -38,7 +38,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 12;     # bump when the Mosaik view changes: open wallets reload
+use constant APP_VERSION => 13;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
 
@@ -416,6 +416,9 @@ sub main_view {
         button("\x{21C5}  Switch", 'flip', style => 'TEXT', enabled => (defined $s->{to} ? 1 : 0)),
         child(label('You receive', 'BODY1BOLD'), align => 'START'),
         child(token_dropdown('to', $reg, \@to_ids, $s->{to}, 'Select token', $sort, $from ? $from->{id} : undef), align => 'JUSTIFY');
+    push @form, child(label('You hold: ' . fmt_amount($s->{to_balance}, $tok->{ $s->{to} }{decimals}) . " $tok->{ $s->{to} }{ticker}",
+                            'BODY2', color => 'SECONDARY'), align => 'END')
+        if defined $s->{to} && defined $s->{to_balance} && $tok->{ $s->{to} };
     if ($LIMIT && $from && defined $s->{to}) {
         my $to = $tok->{ $s->{to} };
         push @form, child(label('Your price', 'BODY1BOLD'), align => 'START');
@@ -509,11 +512,18 @@ sub act_app {
 
 sub act_home { mosaik_replace(home_view(registry())) }
 
+# What the address holds of the pay token (returned) and of the receive token (left in
+# $s->{to_balance}), read in one call whenever a token or the address is chosen.
 sub lookup_balance {
     my ($s) = @_;
     return undef unless $s->{address} && $s->{from};
-    my $r = chain('balance', { address => $s->{address}, token => $s->{from} });
-    return $r->{ok} ? $r->{balance} : undef;
+    my @ids = ($s->{from}, (defined $s->{to} && $s->{to} ne $s->{from}) ? $s->{to} : ());
+    my $r = chain('balance', { address => $s->{address}, tokens => \@ids });
+    return undef unless $r->{ok} && ref $r->{balances} eq 'HASH';
+    my $to = defined $s->{to} ? $r->{balances}{ $s->{to} } : undef;
+    $s->{to_balance} = $to if defined $to && $to =~ /^\d+\z/;
+    my $from = $r->{balances}{ $s->{from} };
+    return (defined $from && $from =~ /^\d+\z/) ? $from : undef;
 }
 
 # Limit screen: read the pool's current price for the chosen pair (receive-token per

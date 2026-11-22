@@ -332,7 +332,15 @@ def cmd_quote(req):
 
 
 def cmd_balance(req):
+    """Confirmed balance of one token, or of several at once (`tokens`: one explorer call)."""
     req_address(req.get("address"))
+    wanted = req.get("tokens")
+    if isinstance(wanted, list):
+        ids = [req_token_id(t, "token") for t in wanted[:20]]
+        bal = explorer(req["cfg"], "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+        have = {t.get("tokenId"): int(t.get("amount", 0)) for t in bal.get("tokens") or []}
+        have[ERG_ID] = int(bal.get("nanoErgs", 0))
+        return {"balances": {i: str(have.get(i, 0)) for i in ids}}
     return {"balance": _balance(req["cfg"], req["address"], req_token_id(req.get("token"), "token"))}
 
 

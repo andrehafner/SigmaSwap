@@ -27,7 +27,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 4;
+use constant APP_VERSION => 5;
 use constant ERG         => '0' x 64;
 use constant TOLERANCE   => 100;     # basis points the pool may move between preview and signing
 
@@ -216,7 +216,7 @@ sub add_view {
     my ($sel) = grep { defined $v->{pool} && !ref $v->{pool} && $_->[0] eq $v->{pool} } @$pools;
     return column([
         header_rows('Add liquidity'),
-        address_card($addr, 'clearResult'),
+        address_card($addr, 'goAdd'),    # a new address reloads the form: the balances shown belong to it
         child(card(column([
             child(label('Pool', 'BODY1BOLD'), align => 'START'),
             child(O(type => 'DropDownList', id => 'pool', value => $sel ? $sel->[0] : undef, onValueChanged => 'goAdd',
@@ -234,14 +234,20 @@ sub amounts_view {
     if ($sel) {
         my $x = tinfo($reg, $sel->[2]{x}{id});
         my $y = tinfo($reg, $sel->[2]{y}{id});
-        for my $f ([ ax => $x ], [ ay => $y ]) {    # ids carry the decimals: the wallet posts raw units
-            my ($pre, $t) = @$f;
+        # what the chosen address holds of the two tokens, so the amounts can be chosen knowingly
+        my $addr = good_address($v->{address});
+        my $bal  = $addr ? chain('balance', { address => $addr, tokens => [ $sel->[2]{x}{id}, $sel->[2]{y}{id} ] }) : {};
+        my $have = ($bal->{ok} && ref $bal->{balances} eq 'HASH') ? $bal->{balances} : {};
+        for my $f ([ ax => $x, $sel->[2]{x}{id} ], [ ay => $y, $sel->[2]{y}{id} ]) {    # ids carry the decimals: the wallet posts raw units
+            my ($pre, $t, $id) = @$f;
             my $val = typed_amount($v, "${pre}_$t->{decimals}");
             push @form,
                 child(label("Amount of $t->{ticker}", 'BODY1BOLD'), align => 'START'),
                 child(O(type => 'DecimalInputField', id => "${pre}_$t->{decimals}", value => defined $val ? N($val) : undef,
                         placeholder => "How much $t->{ticker} to add", onValueChanged => 'clearResult', onImeAction => 'preview',
                         imeActionType => 'DONE', minValue => N(1), scale => N($t->{decimals})), align => 'JUSTIFY');
+            push @form, child(label('You hold: ' . amt($have->{$id}, $t), 'BODY2', color => 'SECONDARY'), align => 'END')
+                if defined $have->{$id} && $have->{$id} =~ /^\d+\z/;
         }
         push @form, child(label("Type either amount. Preview fills in the other from the pool's current price.",
                                 'BODY2', color => 'SECONDARY'), align => 'START');

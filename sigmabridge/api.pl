@@ -28,7 +28,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 5;
+use constant APP_VERSION => 6;
 use constant CHAINS      => (cardano => 'Cardano', ethereum => 'Ethereum', binance => 'BNB Chain', 'bitcoin-runes' => 'Bitcoin Runes',
                             bitcoin => 'Bitcoin', doge => 'Dogecoin', firo => 'Firo');
 use constant CHAIN_ORDER => qw(cardano ethereum binance bitcoin-runes bitcoin doge firo);    # same order as the Rosen app
@@ -143,7 +143,7 @@ sub form_view {
     ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY');
     push @kids, child(card(column([
         child(label('Your Ergo wallet', 'BODY1BOLD'), align => 'START'),
-        O(type => 'ErgoAddressChooseButton', id => 'address', value => $s->{address}, onValueChanged => 'clearResult',
+        O(type => 'ErgoAddressChooseButton', id => 'address', value => $s->{address}, onValueChanged => 'reform',    # reloads: the balance shown belongs to it
           style => $s->{address} ? 'BUTTON_SECONDARY' : undef),
     ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
 
@@ -174,6 +174,12 @@ sub form_view {
             child(O(type => 'DecimalInputField', id => "amount_$t->{decimals}", value => defined $s->{amount} ? N($s->{amount}) : undef,
                     placeholder => "Amount of $t->{name}", onValueChanged => 'clearResult', minValue => N(1), scale => N($t->{decimals})), align => 'JUSTIFY')
             if $t;
+        if ($t && $s->{address}) {    # what the address holds of the chosen token
+            my $id = $t->{id} eq 'erg' ? '0' x 64 : $t->{id};
+            my $b  = chain('balance', { address => $s->{address}, tokens => [$id] });
+            push @form, child(label('You hold: ' . amt($b->{balances}{$id}, $t), 'BODY2', color => 'SECONDARY'), align => 'END')
+                if $b->{ok} && ref $b->{balances} eq 'HASH' && ($b->{balances}{$id} // '') =~ /^\d+\z/;
+        }
     }
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
     push @kids, child(O(type => 'Box', id => 'result', children => [ button('Preview', 'preview') ]), align => 'JUSTIFY');
