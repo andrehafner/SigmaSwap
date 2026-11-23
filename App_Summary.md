@@ -319,6 +319,10 @@
   order at input 0 reduces to the owner's key), read from the source, not on a local run. No cancel from this app
   has been broadcast; the first one should be of a small order. If it were wrong the transaction would be
   rejected by the network, not lose funds, but the order would then need the Lithos client to cancel.
+- **LIT trading needs a wallet with Ergo 6.0 support.** An Android wallet build tested by the operator refused the
+  order transaction before signing ("Cannot create ErgoAddress from unparsed ergo tree", validation rule 1011): it
+  could not read the order box's script. The wallet's source moved to AppKit 6.0.1 on 19 Nov 2026; builds from before
+  that cannot place LithosDex orders. Nothing is sent in that case.
 - **Fills depend on Lithos miners** (about 5 % of blocks) and on a thin LIT market; orders can wait for hours.
 - **"My mining" recognises Lithos by two contract addresses and one token id built into the code**, taken from
   mainnet transactions. A Lithos redeploy silently empties that screen until the constants are updated. Its net

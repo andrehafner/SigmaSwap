@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 1;
+use constant APP_VERSION => 2;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -370,6 +370,11 @@ sub trade_view {
     push @kids, child(O(type => 'Box', id => 'orders', children => [ $s->{address} ? button('My open orders', 'orders', style => 'TEXT') : () ]), align => 'JUSTIFY');
     push @kids, label('Orders are filled by Lithos miners in the blocks they mine, about every 45 minutes on average, sometimes much longer. '
                       . 'Nothing here is instant.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
+    # LithosDex contracts use Ergo 6.0 operations. A wallet build without 6.0 support cannot read the
+    # order box and stops with "Cannot create ErgoAddress from unparsed ergo tree" before signing.
+    push @kids, label('Needs a recent Ergo wallet app. If signing stops with an error about an "unparsed ergo tree", your wallet '
+                      . 'version does not know the newer contract format LithosDex uses yet: nothing was sent. Update the wallet and try again.',
+                      'BODY2', color => 'SECONDARY', talign => 'CENTER');
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
