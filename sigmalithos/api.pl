@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 4;
+use constant APP_VERSION => 5;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -369,8 +369,8 @@ sub trade_view {
     push @kids, child(card(column(\@form, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
     push @kids, child($result || O(type => 'Box', id => 'result', children => [ button('Preview order', 'preview') ]), align => 'JUSTIFY');
     push @kids, child(O(type => 'Box', id => 'orders', children => [ $s->{address} ? button('My open orders', 'orders', style => 'TEXT') : () ]), align => 'JUSTIFY');
-    push @kids, label('Orders are filled by Lithos miners in the blocks they mine, about every 45 minutes on average, sometimes much longer. '
-                      . 'Nothing here is instant.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
+    push @kids, label('Orders are filled by Lithos miners, usually within a few minutes. An order whose price is out of reach waits '
+                      . 'until the price comes back, or until you cancel it.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
     # LithosDex contracts use Ergo 6.0 operations. A wallet build without 6.0 support cannot read the
     # order box and stops with "Cannot create ErgoAddress from unparsed ergo tree" before signing.
     push @kids, label('Needs Ergo wallet app version 2.5.1 or newer. If signing stops with an error about an "unparsed ergo tree", '
@@ -427,8 +427,9 @@ sub act_quote {
         kv_row('Fee to the miner who fills it', erg($q->{executor_fee}) . ($buy ? ' on top' : ', from the ERG you receive')),
         kv_row('Network fee', erg($fee)),
         note('This places an order. A Lithos miner fills it in a block it mines, at the pool price at that moment and never below your '
-             . 'minimum. That takes about 45 minutes on average and can take hours. Other trades can move the price before then, in either '
-             . 'direction. Until it is filled you can cancel it under "My open orders" and get everything back except the network fees. '
+             . 'minimum. That usually takes a few minutes, sometimes longer. Other trades can move the price before then, in either '
+             . 'direction. Until it is filled you can cancel it under "My open orders" and get everything back except the network fees; '
+             . 'an order that fills within minutes leaves little time for that. '
              . erg($q->{returned}) . ' rides along in the order box and comes back to you with the fill.'),
     );
     push @rows, child(label('Warning: this trade moves the pool price by ' . sprintf('%.1f %%', $bps / 100) . '. The LIT pool is small; '
@@ -490,7 +491,8 @@ sub act_orders {
     }
     push @rows, note('No open LIT orders on this address. An order that was filled is no longer listed: what it bought is in your wallet, '
                      . 'and "You hold" above shows it after a refresh. A fill can happen within minutes when a Lithos miner finds the next block.') unless $n;
-    push @rows, note('An order still here is waiting for a Lithos miner to mine a block, or for the price to come back above its minimum.') if $n;
+    push @rows, note('An order still here is waiting for a Lithos miner, or for the price to come back above its minimum. If a cancel is '
+                     . 'refused as a "double spending attempt", a miner was filling the order at that moment: refresh, and it will be gone.') if $n;
     push @rows, button('Refresh', 'orders', style => 'TEXT');
     mosaik_replace(O(type => 'Box', id => 'orders',
                      children => [ child(card(column(\@rows, padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), hAlign => 'JUSTIFY') ]), @extra);
@@ -521,8 +523,8 @@ sub act_status {
     }
     elsif ($st eq 'open') {
         @rows = ($row->('Order is waiting for a Lithos miner', 'BODY1BOLD'), $row->($what),
-                 $row->('It is filled when a Lithos miner next mines a block, about every 45 minutes on average. If the price is below '
-                        . 'your minimum it keeps waiting. You can cancel it under "My open orders".'), $again, $view, $back);
+                 $row->('A Lithos miner usually fills it within a few minutes. If the price is below your minimum it keeps waiting. '
+                        . 'You can cancel it under "My open orders".'), $again, $view, $back);
     }
     elsif ($st eq 'cancelled') { @rows = ($row->('Order cancelled', 'BODY1BOLD'), $row->($what), $row->('The funds are back on your address.'), $back) }
     elsif ($st eq 'pending')   { @rows = ($row->('Order submitted', 'BODY1BOLD'), $row->($what), $row->('Waiting for the next Ergo block (about two minutes).'), $again, $view) }
@@ -586,7 +588,7 @@ sub act_ergopay {
         address         => $r->{address},
         message         => 'SigmaLithos: place a LithosDex order to sell ' . unit($r->{from}, $r->{amount}) . ' for about ' . unit($r->{to}, $r->{out}, 4)
                            . ', and never less than ' . unit($r->{to}, $r->{min_out}, 4) . '. A Lithos miner fills it (fee ' . erg($r->{executor_fee})
-                           . '); this can take an hour or more. You can cancel it in SigmaLithos until then. Network fee ' . erg($r->{miner_fee}) . '.',
+                           . '), usually within minutes. You can cancel it in SigmaLithos until then. Network fee ' . erg($r->{miner_fee}) . '.',
         messageSeverity => 'INFORMATION',
     ));
 }

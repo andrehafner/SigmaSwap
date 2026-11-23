@@ -2732,6 +2732,9 @@ def cmd_ldcancel(req):
     order = _ld_order_view(raw, pk)
     if not order:
         raise SwapError("This is not an open order of this address.")
+    # a miner's fill may already be waiting for the next block: a cancel would only be refused as a double spend
+    if any(i.get("boxId") == box_id for t in mempool_txs(cfg, raw.get("address") or "") for i in t.get("inputs") or []):
+        raise SwapError("A miner is filling this order right now. It cannot be cancelled any more; check again in a few minutes.")
     value = int(raw["value"])
     toks = {a["tokenId"]: int(a["amount"]) for a in raw.get("assets") or []}
     ctx, height = chain_context(cfg)

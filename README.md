@@ -54,9 +54,8 @@ app, do not sign it.
 - **Swapuz is a custodial exchange, not a bridge.** It holds your ERG until it pays out the other coin. The
   rate shown is an estimate, there is a high minimum, and Swapuz can put an exchange on hold and ask for
   identity documents. Problems with an exchange are between you and Swapuz (support@swapuz.com).
-- **LIT orders wait for a Lithos miner.** An order on LithosDex is filled only in a block a Lithos miner
-  mines, on average about every 45 minutes and sometimes much later, at the pool price then and never below
-  your minimum. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
+- **LIT orders wait for a Lithos miner.** An order on LithosDex is filled by a Lithos miner, usually within a
+  few minutes, at the pool price then and never below your minimum. If the price is out of reach it waits. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
   Placing a LIT order needs Ergo wallet app version 2.5.1 or newer; older versions refuse to sign it.
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
