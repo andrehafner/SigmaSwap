@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 2;
+use constant APP_VERSION => 3;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -189,7 +189,8 @@ sub home_view {
         $choice->('My mining', 'What a mining address earned from Lithos lately: payouts in ERG and LIT, blocks found and what the share proofs cost.',
                   'Read-only, from the address\'s own transactions on the blockchain. It does not connect to your miner.', 'Show my mining', 'goMine', 'SECONDARY'),
         $choice->('Trade LIT', 'Buy LIT with ERG or sell LIT for ERG on LithosDex, the exchange built into Lithos.',
-                  'You place an order; a Lithos miner fills it at the pool price, never below your minimum. You can cancel it until then.', 'Trade LIT', 'goTrade', 'SECONDARY'),
+                  'You place an order; a Lithos miner fills it at the pool price, never below your minimum. You can cancel it until then. '
+                  . 'Needs Ergo wallet app version 2.5.1 or newer.', 'Trade LIT', 'goTrade', 'SECONDARY'),
         label('An independent app, not made by the Lithos project. It cannot set up or control a miner: that needs the Lithos client on your own computer.',
               'BODY2', color => 'SECONDARY', talign => 'CENTER'),
         button('lithosprotocol.org', 'openLithos', style => 'TEXT'),
@@ -372,8 +373,8 @@ sub trade_view {
                       . 'Nothing here is instant.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
     # LithosDex contracts use Ergo 6.0 operations. A wallet build without 6.0 support cannot read the
     # order box and stops with "Cannot create ErgoAddress from unparsed ergo tree" before signing.
-    push @kids, label('Needs a recent Ergo wallet app. If signing stops with an error about an "unparsed ergo tree", your wallet '
-                      . 'version does not know the newer contract format LithosDex uses yet: nothing was sent. Update the wallet and try again.',
+    push @kids, label('Needs Ergo wallet app version 2.5.1 or newer. If signing stops with an error about an "unparsed ergo tree", '
+                      . 'your wallet is older and cannot read the contract format LithosDex uses: nothing was sent. Update the wallet and try again.',
                       'BODY2', color => 'SECONDARY', talign => 'CENTER');
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
@@ -457,6 +458,11 @@ sub act_quote {
             push @extra, O(type => 'BackendRequestAction', url => "$API?action=status&n=$nonce", id => 'status', postValues => 'NONE');
         }
         push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay', onFinished => $ok ? 'status' : 'goTrade');
+        push @rows, child(row([
+            O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
+            child(label('Your Ergo wallet app must be version 2.5.1 or newer to sign this. Older versions stop with an error.',
+                        'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY');
         push @rows, button($buy ? 'Place order: buy LIT' : 'Place order: sell LIT', 'pay');
     }
     push @rows, button('Refresh', 'preview', style => 'TEXT');

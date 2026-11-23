@@ -57,6 +57,7 @@ app, do not sign it.
 - **LIT orders wait for a Lithos miner.** An order on LithosDex is filled only in a block a Lithos miner
   mines, on average about every 45 minutes and sometimes much later, at the pool price then and never below
   your minimum. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
+  Placing a LIT order needs Ergo wallet app version 2.5.1 or newer; older versions refuse to sign it.
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
 
