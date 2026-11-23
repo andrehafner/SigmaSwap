@@ -152,9 +152,26 @@ If `deploy/sigmaswap.conf` changed, copy it again (step 5). If a Mosaik screen c
 
 1. **Rate limiting.** There is no login, and every request starts a Python process and makes
    several calls to the Ergo explorer. Nothing in the code limits how often one visitor may do
-   that. Put a per-address limit on `/cgi-bin/sigmaswap` first, for example
-   `sudo apt install libapache2-mod-evasive` (or `libapache2-mod-qos`), or a rate-limiting rule at
-   your CDN. A few requests per second per address is far more than a real wallet needs.
+   that. `deploy/sigmaswap-ratelimit.conf` does, for these apps only:
+
+   ```bash
+   sudo apt install -y libapache2-mod-qos
+   sudo cp deploy/sigmaswap-ratelimit.conf /etc/apache2/conf-available/
+   sudo a2enmod qos && sudo a2enconf sigmaswap-ratelimit
+   sudo apache2ctl configtest && sudo systemctl restart apache2
+   ```
+
+   It allows each visitor address 90 app requests a minute and 24 app requests at once for
+   everyone together, and answers `429 Too Many Requests` beyond that. Only URLs ending in
+   `api.pl` under `/cgi-bin/sigmaswap/` are counted or refused; the rest of the server is untouched.
+   Check it (the first 90 or so answer 200, the rest 429, and it clears after a minute):
+
+   ```bash
+   for i in $(seq 120); do curl -s -o /dev/null -w '%{http_code}\n' "$H/sigmastats/api.pl?action=notify"; done | sort | uniq -c
+   ```
+
+   Refusals are logged in `error.log` as `mod_qos(067)` (one visitor) or `mod_qos(010)` (too many
+   at once). If the site is behind a CDN or proxy, read the note at the end of the file first.
 2. **The cache directory must stay outside anything Apache serves.** It holds `mint-secret` (the
    key that signs upload sessions), upload counters, transaction notes and notification lists.
    `/var/lib/sigmaswap` is correct; never point `CACHE_DIR` into `/usr/lib/cgi-bin` or `/var/www`.
