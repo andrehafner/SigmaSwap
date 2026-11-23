@@ -109,5 +109,17 @@ opening a public issue, and include enough detail to reproduce it.
 
 ## Licence
 
-No licence has been chosen yet. Until one is added, the code is published for reading and review
-only; all rights are reserved by its authors.
+Copyright (C) 2026 the SigmaSwap authors.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License, version 3, as published by the Free Software Foundation. It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. The full text is in [`LICENSE`](LICENSE).
+
+In practice: you may use, copy, change and run it, including commercially. If you pass it on, or
+run a changed version as a service that other people use over a network, you must make the source
+of your version available to them under the same licence.
+
+The token logos in `icons/` belong to their projects and are not covered by this licence. Lithos's
+order contract templates in `sigmaswap.py` come from the Lithos client, which its authors published
+under CC0.
