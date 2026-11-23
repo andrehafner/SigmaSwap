@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 3;
+use constant APP_VERSION => 4;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -488,7 +488,8 @@ sub act_orders {
             button('Cancel and take it back', "cancel$n", style => 'SECONDARY');
         last if $n >= 20;
     }
-    push @rows, note('No open LIT orders on this address. Filled and cancelled orders disappear from this list.') unless $n;
+    push @rows, note('No open LIT orders on this address. An order that was filled is no longer listed: what it bought is in your wallet, '
+                     . 'and "You hold" above shows it after a refresh. A fill can happen within minutes when a Lithos miner finds the next block.') unless $n;
     push @rows, note('An order still here is waiting for a Lithos miner to mine a block, or for the price to come back above its minimum.') if $n;
     push @rows, button('Refresh', 'orders', style => 'TEXT');
     mosaik_replace(O(type => 'Box', id => 'orders',

@@ -314,7 +314,8 @@
   library (ergo-lib-python 0.28) cannot parse or evaluate. So, unlike ErgoDex orders, an order's fill is not
   proven before signing. What stands in for that: the order script is Lithos's published template with constants
   substituted on the bytes, the construction reproduced two real, filled mainnet orders byte for byte, and the
-  price formula matched those fills exactly. No order from this app has been placed or filled on-chain yet.
+  price formula matched those fills exactly. One order from this app has since been placed and filled on mainnet
+  (1 ERG for LIT, signed with wallet 2.5.1, filled by a Lithos miner in the same block, above its minimum).
 - **LithosDex cancel is built without evaluating the contract.** It relies on the contract's refund path (the
   order at input 0 reduces to the owner's key), read from the source, not on a local run. No cancel from this app
   has been broadcast; the first one should be of a small order. If it were wrong the transaction would be
@@ -322,8 +323,8 @@
 - **LIT trading needs a wallet with Ergo 6.0 support.** An Android wallet build tested by the operator refused the
   order transaction before signing ("Cannot create ErgoAddress from unparsed ergo tree", validation rule 1011): it
   could not read the order box's script. The wallet's source moved to AppKit 6.0.1 on 19 Nov 2026; builds from before
-  that (wallet version 2.5.0 and older) cannot place LithosDex orders; the app asks for 2.5.1 or newer. Whether a
-  2.5.1 build signs these orders is not yet confirmed. Nothing is sent when the wallet refuses.
+  that (wallet version 2.5.0 and older) cannot place LithosDex orders; the app asks for 2.5.1 or newer. A 2.5.1
+  build signed and placed one successfully. Nothing is sent when the wallet refuses.
 - **Fills depend on Lithos miners** (about 5 % of blocks) and on a thin LIT market; orders can wait for hours.
 - **"My mining" recognises Lithos by two contract addresses and one token id built into the code**, taken from
   mainnet transactions. A Lithos redeploy silently empties that screen until the constants are updated. Its net
