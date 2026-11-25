@@ -44,6 +44,10 @@ sudo venv/bin/python -m pip install -r requirements.txt
 sudo venv/bin/python -I -c 'import ergo_lib_python; print("ok")'      # must print ok
 ```
 
+**Optional, recommended if you run SigmaLithos:** install the newer library build in `vendor/` over the one
+just installed. It can evaluate Lithos's contracts, which the PyPI version cannot. Steps, checksum and how it was
+built are in `vendor/README.md`. It is for Python 3.10 only (`venv/bin/python --version`).
+
 ## 4. Settings file + cache directory
 
 ```bash
