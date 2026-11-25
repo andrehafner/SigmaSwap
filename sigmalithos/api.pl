@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 7;
+use constant APP_VERSION => 8;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -63,7 +63,8 @@ sub too_old_text {
 
 my %mosaik = ('' => \&act_app, home => \&act_home, dash => \&act_dash, mine => \&act_mine,
               trade => \&act_trade, quote => \&act_quote, orders => \&act_orders, status => \&act_status,
-              liq => \&act_liq, liqq => \&act_liqq, liqpos => \&act_liqpos, lstatus => \&act_lstatus);
+              liq => \&act_liq, liqq => \&act_liqq, liqpos => \&act_liqpos, lstatus => \&act_lstatus,
+              lend => \&act_lend, lendq => \&act_lendq);
 
 if ($cgi->cgi_error) { die_json('Bad request') }
 elsif ($action eq 'ergopay') {
@@ -152,6 +153,10 @@ sub base_actions {
         O(type => 'BackendRequestAction', url => "$API?action=quote",  id => 'preview', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=orders", id => 'orders',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=liq",    id => 'goLiq',   postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=lend",   id => 'goLend',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=lendq",  id => 'lendPreview', postValues => 'VALID'),
+        O(type => 'ChangeSiteAction', id => 'clearLend',
+          newContent => O(view => O(type => 'Box', id => 'lendresult', children => [ button('Preview', 'lendPreview') ]))),
         O(type => 'BackendRequestAction', url => "$API?action=liqq",   id => 'liqPreview', postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=liqpos", id => 'liqPos',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=orders&k=liq", id => 'liqOrders', postValues => 'VALID'),
@@ -227,6 +232,15 @@ sub home_view {
                   'Your share moves with the price, so you can end up with less than if you had simply held. A position is owned by an NFT in your wallet: '
                   . 'whoever holds that NFT owns the position.' . (defined $WALLET_OK ? '' : " Needs Ergo wallet app version $MIN_TEXT or newer."),
                   'Provide liquidity', 'goLiq', 'SECONDARY')),
+        ($TOO_OLD
+            ? child(card(column([
+                  child(label('Lend collateral', 'HEADLINE2'), align => 'START'),
+                  child(label(too_old_text(), 'BODY2BOLD', color => 'PRIMARY'), align => 'START'),
+              ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY')
+            : $choice->('Lend collateral', 'Lend ERG to the pool so miners are paid the moment a block is found, and earn the difference when that block\'s own reward reaches you.',
+                  'Locks about 3 ERG and a few thousand LIT until a miner uses them, and cannot be cancelled once placed. One position per address.'
+                  . (defined $WALLET_OK ? '' : " Needs Ergo wallet app version $MIN_TEXT or newer."),
+                  'Lend collateral', 'goLend', 'SECONDARY')),
         label('An independent app, not made by the Lithos project. It cannot set up or control a miner: that needs the Lithos client on your own computer.',
               'BODY2', color => 'SECONDARY', talign => 'CENTER'),
         button('lithosprotocol.org', 'openLithos', style => 'TEXT'),
@@ -591,11 +605,133 @@ sub liq_view {
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
+# ================================================================ lending ==
+
+use constant BIDS => (0 => 'No fee: most profit, picked last', 10000000 => 'Small fee', 30000000 => 'Medium fee', 50000000 => 'Typical fee: picked sooner, least profit');
+
+sub lend_view {
+    my ($v) = @_;
+    my $addr = good_address($v->{address});
+    my @kids = (header_rows('Lend collateral'), address_card($addr, 'goLend'));
+    my $i = chain('lendinfo', { $addr ? (address => $addr) : () }, 90);
+    if (!$i->{ok}) {
+        push @kids, label($i->{error} || 'Lithos lending is unavailable right now.', 'BODY1', talign => 'CENTER'), button('Retry', 'goLend');
+        return (column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT'));
+    }
+    my $d  = stats();
+    my $cm = ($d && ref $d->{stats}{collateralMarket} eq 'HASH') ? $d->{stats}{collateralMarket} : {};
+    my $le = ref $cm->{lenders} eq 'HASH' ? $cm->{lenders} : {};
+    my @mkt = (
+        kv_row('ERG a position locks', erg($i->{principal}) . ' plus your fee'),
+        kv_row('LIT permit to join now', lit($i->{permit}, 0), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('Positions waiting in the queue', commas($i->{backlog})),
+        kv_row('Positions in use', "$i->{active} of 100"),
+    );
+    push @mkt, kv_row('A full cycle takes about', num($le->{cycleDays}, 0) . ' days') if defined $le->{cycleDays};
+    push @mkt, kv_row('Recent return per cycle', num($le->{roiPercent}, 2) . ' %') if defined $le->{roiPercent};
+    push @mkt, note('How it works: your position waits its turn in the queue, then joins the 100 in use. When a Lithos miner finds a block with '
+                    . 'it, your ERG pays the pool at once, the LIT permit comes straight back to you, and that block\'s own reward (3 ERG plus its '
+                    . 'transaction fees) is paid to your key. You can collect it here about a day later. The permit grows with the queue.');
+    push @kids, section('The lending market', @mkt);
+
+    my @extra;
+    if ($addr) {
+        my @you;
+        my $state = $i->{state} // 'none';
+        if ($state eq 'queued') {
+            my $q = (ref $i->{queued} eq 'ARRAY' && ref $i->{queued}[0] eq 'HASH') ? $i->{queued}[0] : {};
+            push @you, kv_row('Your position', 'waiting in the queue', style => 'BODY1BOLD', color => 'PRIMARY'),
+                       kv_row('Positions ahead of yours', commas($q->{ahead} // 0)),
+                       note('It moves up as blocks are found. Nothing to do until then, and it cannot be cancelled.');
+        }
+        elsif ($state eq 'active') {
+            push @you, kv_row('Your position', 'in use', style => 'BODY1BOLD', color => 'PRIMARY'),
+                       note('It is among the 100 that miners draw on. When one finds a block with it, the permit returns and the reward is yours a day later.');
+        }
+        else { push @you, kv_row('Your position', 'none on this address') }
+        push @you, kv_row('Rewards ready to collect', erg($i->{rewards_ready}, 4) . " ($i->{rewards_ready_count})") if $i->{rewards_ready_count};
+        push @you, kv_row('Rewards still maturing', erg($i->{rewards_waiting}, 4) . " ($i->{rewards_waiting_count})") if $i->{rewards_waiting_count};
+        if ($i->{rewards_ready_count}) {
+            push @extra, sign_pair('reward', 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&k=reward&addr=$addr", 'goLend');
+            push @you, O(type => 'Box', id => 'lendreward', children => [ button('Collect rewards', 'reward', style => 'SECONDARY') ]);
+        }
+        push @kids, section('You', @you);
+
+        if ($state eq 'none') {
+            my %bids = BIDS;
+            my $bid  = (defined $v->{bid} && !ref $v->{bid} && exists $bids{ $v->{bid} }) ? $v->{bid} : 50000000;
+            push @kids, child(card(column([
+                child(label('Open a position', 'BODY1BOLD'), align => 'START'),
+                child(label('Priority fee', 'BODY1'), align => 'START'),
+                child(O(type => 'DropDownList', id => 'bid', value => "$bid", onValueChanged => 'clearLend',
+                        entries => O(map { $_ => $bids{$_} . ' (' . fmt_amount($_, 9) . ' ERG)' } sort { $a <=> $b } keys %bids)), align => 'JUSTIFY'),
+                note('A position is 2.915 ERG plus this fee. The fee is given up: a fifth goes to the miner who uses your position, the rest to the pool, so miners pick paying positions first. Profit per use is 0.085 ERG minus the fee, plus the block\'s transaction fees. Most lenders currently pay 0.03 to 0.05 ERG; positions with no fee can wait much longer.'),
+                child(label('You hold: ' . erg($i->{balance_erg}, 4) . ' and ' . lit($i->{balance_lit}, 0), 'BODY2', color => 'SECONDARY'), align => 'END'),
+            ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+            push @kids, child(O(type => 'Box', id => 'lendresult', children => [ button('Preview', 'lendPreview') ]), align => 'JUSTIFY');
+        }
+        else {
+            push @kids, label('One position per address: a second one from the same address would be forfeited, so this app does not offer it. '
+                              . 'Use another address of your wallet to open another.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
+        }
+    }
+    push @kids, button('Refresh', 'goLend', style => 'TEXT');
+    return (column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT'), @extra);
+}
+
+sub act_lend { return mosaik_dialog(too_old_text()) if $TOO_OLD; mosaik_replace(lend_view(posted_values())) }
+
+sub act_lendq {
+    return mosaik_dialog(too_old_text()) if $TOO_OLD;
+    my $v    = posted_values();
+    my $addr = good_address($v->{address}) or return mosaik_dialog('Choose your wallet address first.');
+    my %bids = BIDS;
+    my $bid  = (defined $v->{bid} && !ref $v->{bid} && exists $bids{ $v->{bid} }) ? $v->{bid} : 50000000;
+    my $i = chain('lendinfo', { address => $addr }, 90);
+    return mosaik_dialog($i->{error} || 'Lithos lending is unavailable right now.') unless $i->{ok};
+    return mosaik_dialog('This address already has a position. One position per address.') unless ($i->{state} // '') eq 'none';
+    my $fee    = cfg('MINER_FEE', 1100000) + 0;
+    my $value  = $i->{principal} + $bid;
+    my $profit = $i->{block_reward} - $value;
+    # the permit follows the queue: allow it to have grown by a few joins between preview and signing
+    my $max_permit = Math::BigInt->new($i->{permit})->badd('100000000000')->bstr;
+    my @rows = (
+        kv_row('You lock', erg($value), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('and the LIT permit', lit($i->{permit}, 0), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('of which priority fee', $bid ? erg($bid) : 'none'),
+        kv_row('Positions ahead of yours', commas($i->{backlog})),
+        kv_row('Profit when it is used', "\x{2248} " . erg($profit, 4) . ' + block fees'),
+        kv_row('Network fee', erg($fee)),
+        child(row([
+            O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
+            child(label('This cannot be cancelled. The ERG and the LIT stay locked until a miner uses your position. How long that takes depends on the queue and on how often Lithos finds blocks: days at best, possibly much longer.',
+                        'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY'),
+        note('When it is used you get the LIT permit back at once, and the block\'s reward about a day later under "Collect rewards". The LIT '
+             . 'price can change while it is locked. If Lithos stopped finding blocks, the position would simply keep waiting. Do not open a second '
+             . 'position from this address anywhere else while this one is open: Lithos\'s rules forfeit a duplicate.'),
+    );
+    my @extra;
+    if (Math::BigInt->new($i->{balance_lit})->bcmp(Math::BigInt->new($i->{permit})) < 0) {
+        push @rows, label('Not enough LIT: the permit is ' . lit($i->{permit}, 0) . ' and this address holds ' . lit($i->{balance_lit}, 0)
+                          . '. You can buy LIT under "Trade LIT".', 'BODY1', talign => 'CENTER');
+    }
+    elsif (Math::BigInt->new($i->{balance_erg})->bcmp($value + $fee + 2000000) < 0) {
+        push @rows, label('Not enough ERG: the position needs ' . erg($value) . ' plus the network fee.', 'BODY1', talign => 'CENTER');
+    }
+    else {
+        push @extra, sign_pair('join', 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&k=join&a=$bid&my=$max_permit&addr=$addr", 'goLend');
+        push @rows, button('Lend: open the position', 'join');
+    }
+    push @rows, button('Refresh', 'lendPreview', style => 'TEXT');
+    mosaik_replace(liq_box('lendresult', \@rows), @extra);
+}
+
 sub act_liq { return mosaik_dialog(too_old_text()) if $TOO_OLD; mosaik_replace(liq_view(posted_values())) }
 
 sub sign_pair {    # (status action, ErgoPayAction) for one signing link, tied together by a fresh note id
     my ($id, $url, $after) = @_;
-    my ($kind) = $url =~ /[?&]k=(dep|claim|close)\b/;
+    my ($kind) = $url =~ /[?&]k=(dep|claim|close|join|reward)\b/;
     my $nonce = new_nonce();
     my $ok = defined $nonce && record_file($nonce);
     my @a;
@@ -656,7 +792,7 @@ sub act_liqq {
 sub liq_state {
     my ($rec) = @_;
     my $kind = $rec->{kind} // '';
-    if ($kind eq 'claim') {
+    if ($kind =~ /^(claim|join|reward)\z/) {
         my $r = chain('status', { tx_id => $rec->{tx_id}, watch_box => $rec->{watch_box}, mode => 'bridge', address => $rec->{address} });
         return $r->{ok} ? ($r->{state} // 'unknown') : 'unknown';
     }
@@ -670,12 +806,14 @@ sub act_lstatus {
     my $rec  = load_record($nonce);
     my $kind = ($rec && ($rec->{app} // '') eq 'lithos') ? ($rec->{kind} // '') : '';
     # before the wallet fetched anything there is no note yet: the kind is then carried in the link
-    $kind = $cgi->url_param('k') // '' unless $kind =~ /^(dep|claim|close)\z/;
-    $kind = 'dep' unless $kind =~ /^(dep|claim|close)\z/;
-    my $area  = $kind eq 'dep' ? 'liqresult' : 'liqpos';
+    $kind = $cgi->url_param('k') // '' unless $kind =~ /^(dep|claim|close|join|reward)\z/;
+    $kind = 'dep' unless $kind =~ /^(dep|claim|close|join|reward)\z/;
+    my $lend  = $kind =~ /^(join|reward)\z/ ? 1 : 0;
+    my $area  = $kind eq 'dep' ? 'liqresult' : $kind eq 'join' ? 'lendresult' : $kind eq 'reward' ? 'lendreward' : 'liqpos';
     my $self  = O(type => 'BackendRequestAction', url => "$API?action=lstatus&n=$nonce&k=$kind", id => 'lstatus', postValues => 'NONE');
     my $again = button('Refresh status', 'lstatus', style => 'SECONDARY');
-    my $back  = $kind eq 'dep' ? button('Back to the form', 'clearLiq', style => 'TEXT') : button('Back to my positions', 'liqPos', style => 'TEXT');
+    my $back  = $lend ? button('Back to lending', 'goLend', style => 'TEXT')
+              : $kind eq 'dep' ? button('Back to the form', 'clearLiq', style => 'TEXT') : button('Back to my positions', 'liqPos', style => 'TEXT');
     my $row   = sub { child(label($_[0], $_[1] || 'BODY1'), align => 'START') };
     my @rows;
     if (!$rec || !$rec->{tx_id}) {
@@ -686,8 +824,10 @@ sub act_lstatus {
     my $st = liq_state($rec);
     my %done = (dep   => [ 'Liquidity added', 'Your deposit was filled. The LD-NFT in your wallet is your position: see "My positions".' ],
                 close => [ 'Position closed', 'Your share of the pool and the position deposit were paid to your address.' ],
-                claim => [ 'Fees collected', 'You received ' . erg($rec->{claim_erg} // 0, 6) . ' and ' . lit($rec->{claim_lit} // 0, 4) . '.' ]);
-    if ($st eq 'filled' || ($kind eq 'claim' && $st eq 'confirmed')) { @rows = ($row->($done{$kind}[0], 'BODY1BOLD'), $row->($done{$kind}[1]), $back) }
+                claim => [ 'Fees collected', 'You received ' . erg($rec->{claim_erg} // 0, 6) . ' and ' . lit($rec->{claim_lit} // 0, 4) . '.' ],
+                join  => [ 'Position opened', 'You are in the Lithos collateral queue. "Lend collateral" shows how many positions are ahead of yours.' ],
+                reward => [ 'Rewards collected', 'You received ' . erg($rec->{net} // 0, 4) . '.' ]);
+    if ($st eq 'filled' || ($kind =~ /^(claim|join|reward)\z/ && $st eq 'confirmed')) { @rows = ($row->($done{$kind}[0], 'BODY1BOLD'), $row->($done{$kind}[1]), $back) }
     elsif ($st eq 'open') {
         @rows = ($row->('Waiting for a Lithos miner', 'BODY1BOLD'),
                  $row->('The order is on the blockchain. A Lithos miner usually fills it within a few minutes; you can cancel it under '
@@ -794,10 +934,11 @@ sub act_status {
 sub act_notify {
     notify_json(notifications('lithos', sub {
         my ($it) = @_;
-        if (($it->{kind} // '') =~ /^(dep|claim|close)\z/) {
+        if (($it->{kind} // '') =~ /^(dep|claim|close|join|reward)\z/) {
             my $st = liq_state($it);
             return (1, 'Your liquidity was added to the LithosDex pool. The LD-NFT in your wallet is your position.') if $it->{kind} eq 'dep' && $st eq 'filled';
             return (1, 'Your LithosDex position was closed and paid out.') if $it->{kind} eq 'close' && $st eq 'filled';
+            return (1, 'You joined the Lithos collateral queue.') if $it->{kind} eq 'join' && $st eq 'confirmed';
             return (1) if $st =~ /^(confirmed|cancelled|failed|filled)\z/;
             return (1) if time - ($it->{t} || 0) > 30 * 86400 || ($st eq 'unknown' && time - ($it->{t} || 0) > 86400);
             return (0);
@@ -837,7 +978,7 @@ sub act_ergopay {
     }
     my $note = (defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/ && note_is_ours($p{n}, 'lithos')) ? $p{n} : undef;
     if (defined $p{k}) {    # liquidity: deposit order, fee collection, closing order
-        return ergopay_error('Invalid request.') unless $p{k} =~ /^(dep|claim|close)\z/;
+        return ergopay_error('Invalid request.') unless $p{k} =~ /^(dep|claim|close|join|reward)\z/;
         my ($r, $msg);
         if ($p{k} eq 'dep') {
             return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my ms);
@@ -845,6 +986,18 @@ sub act_ergopay {
             $msg = sub { 'SigmaLithos: place a LithosDex deposit order adding ' . erg($r->{amount_x}) . ' and ' . lit($r->{amount_y}, 4)
                          . ' to the ERG:LIT pool. A Lithos miner fills it (fee ' . erg($r->{executor_fee}) . ') and you receive an LD-NFT that '
                          . 'owns the position; 0.6 ERG is held as the position deposit. You can cancel in SigmaLithos until it is filled.' };
+        }
+        elsif ($p{k} eq 'join') {
+            return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^(?:0|[1-9]\d{0,18})\z/ } qw(a my);
+            $r = chain('lendjoin', { bid => $p{a}, max_permit => $p{my}, address => $addr }, 90);
+            $msg = sub { 'SigmaLithos: LEND to the Lithos pool. This locks ' . erg($r->{value}) . ' and ' . lit($r->{permit}, 0) . ' in the collateral queue ('
+                         . commas($r->{ahead}) . ' positions ahead). It CANNOT be cancelled and stays locked until a miner uses it. When a miner uses it the LIT '
+                         . 'comes back and the block reward is paid to your key.' };
+        }
+        elsif ($p{k} eq 'reward') {
+            $r = chain('lendclaim', { address => $addr }, 90);
+            $msg = sub { 'SigmaLithos: collect ' . erg($r->{net}, 4) . " of lending rewards from $r->{boxes} matured reward box" . ($r->{boxes} == 1 ? '' : 'es')
+                         . '. ' . erg($r->{reemission}, 0) . ' of what those boxes hold goes to Ergo\'s re-emission contract, as the network requires of every mining reward.' };
         }
         else {
             return ergopay_error('Invalid request.') unless defined $p{t} && $p{t} =~ /^[0-9a-f]{64}\z/;
@@ -862,10 +1015,11 @@ sub act_ergopay {
         }
         return ergopay_error($r->{error} || 'This could not be prepared. Please try again.') unless $r->{ok};
         save_record($note, { app => 'lithos', kind => $p{k}, t => time, tx_id => $r->{tx_id}, watch_box => $r->{watch_box},
-                             order_box => $r->{order_box}, address => $r->{address}, claim_erg => $r->{claim_erg}, claim_lit => $r->{claim_lit} }) if $note;
+                             order_box => $r->{order_box}, address => $r->{address}, claim_erg => $r->{claim_erg}, claim_lit => $r->{claim_lit},
+                             net => $r->{net} }) if $note;
         warn "sigmalithos: built $p{k} tx $r->{tx_id}\n";
         return out_json(O(reducedTx => $r->{reduced_tx}, address => $r->{address}, message => $msg->() . ' Network fee ' . erg($r->{miner_fee}) . '.',
-                          messageSeverity => $p{k} eq 'close' ? 'WARNING' : 'INFORMATION'));
+                          messageSeverity => $p{k} =~ /^(close|join)\z/ ? 'WARNING' : 'INFORMATION'));
     }
     return ergopay_error('Invalid request.')
         unless defined $p{side} && $p{side} =~ /^(buy|sell)\z/ && !grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a m);

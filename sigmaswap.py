@@ -3388,6 +3388,296 @@ def cmd_ldredeem(req):
             "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id), "kind": "redeem"}
 
 
+# ---- Lithos collateral lending ------------------------------------------------------
+# A lender locks ERG (the "principal", a little under one block reward) plus a LIT permit in a
+# queue box. When the box reaches the front it becomes a collateral box, and the Lithos miner who
+# next finds a block spends it to pay the pool at once. In exchange that block's own reward goes to
+# the lender's key (spendable 720 blocks later) and the permit comes straight back.
+#
+# Joining spends Lithos's single emission box, whose guard runs two scripts handed to it in context
+# variables 64 and 65. They are compiled at Lithos's side and are not published as bytes, so the two
+# below were taken from a real join on mainnet. They are only usable if they are still the ones the
+# chain demands: the emission box's script holds the hash of the first and the config box holds the
+# hash of the second, and both are compared before anything is built (_lend_boxes).
+LITHOS_EMISSION_NFT = "1ddb641b785e9ac9baf455f64932295e48cbbf4aadc9645f74065d58d09cdc47"
+LITHOS_CONFIG_NFT = "34a44f069c15ff92038803c6c21194f2c9a194f3a610c40ee1ef2773bdfc5c35"
+LITHOS_QUEUE_TOKEN = "3508c83c692de0ac9dabe1ed6a57a36abe5fed40fba5e497967a848ee423bc08"
+LEND_PRINCIPAL = 2915000000      # nanoERG: the least a queue box may hold (no priority fee)
+LEND_DUST = 5000000              # nanoERG dust budget in every queue box's R4; a fifth of the priority fee is added to it
+LEND_MIN_FEE = 1000000           # a priority fee is zero or at least this
+LEND_BLOCK_REWARD = 3000000000   # what the lender's key is paid by the block that uses the box
+REWARD_DELAY = 720               # blocks before a mining reward box can be spent
+REEMISSION_TOKEN = "d9a2cc8a09abfaed87afacfbb7daee79a6b26f10c6613fc13d3f3953e5521d1a"
+PAY2REEMISSION_TREE = "193c03040004000e20d3feeffa87f2df63a7a15b4905e618ae3ce4c69a7975f171bd314d0b877927b8d1938cb2e4c6b2a5730000020c4d0e730100017302"
+LITHOS_QUEUE_TREE = "1b3903040004000e201ddb641b785e9ac9baf455f64932295e48cbbf4aadc9645f74065d58d09cdc47d1938cb2db6308b2a4730000730100017302"
+LITHOS_EM_SCRIPT = (
+    "d828d601e4e30002d6020e20b4c11d0e04ff78de8d302c19cbc740ff7e88068aaf6db6c85a0d9769468057d8d603db63"
+    "08a7d604b27203040200d6058c720401d6060e20c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab"
+    "25cb6de7d607b2a5040000d608db63087207d609b27208040200d60ab27208040400d60bb27203040400d60c8c720b01"
+    "d60d9683060193c5b2a4040000c5a793c2a7c2720793c1a7c1720793b27208040000b27203040000938c720901720593"
+    "8c720a01720cd60ed9010e0eb0a40500d9011041639a8c721001b0db63088c7210020500d90112414d0ed802d6148c72"
+    "1202d6158c72120195938c721401720e9a72158c7214027215d60f8c720402d6108c720b02d6118c720902d6128c720a"
+    "02d613e4c672070404d614e4c6a70404d615e4c67207051ad616e4c6a7051ad617860272060500d618b2720804060172"
+    "17d6198cb27203040601721702d61ae5e301040401d61b9d72140490a10fd61c958f721b04100580e0b38a93080500d6"
+    "1d9a9592721404d0ecd8020500958f721b041c990580a094a58d1d9c7e9d721b0404050580d0dbc3f402958f721b0420"
+    "9593721b041c0580f092cbdd080580a0b787e9050580d0dbc3f402721cd61e958f7219721d7219721dd61fb2a4040200"
+    "d620db6308721fd6218301020200d622860272210500d623b272200402017222d6248c722302d6259592721e721c721c"
+    "0500d626e4c6b2db6501fe040000070ed6278c721801d6288c721802959372010200d806d629b2a5040200d62adb6308"
+    "7229d62bb2722a040000d62cb2722a040201860283010202000500d62d7227d62e7228d1eded720d9683080193cbc272"
+    "297202938c722b017205938c722b02050290b1722a0404ec938c722c017206938c722c020500e6c672290508e6c67229"
+    "0405e6c6722906029683090193da720e017205720f93da720e01720c721093721199720f050293721272109372137214"
+    "937215721693722d720693722e721993b17208b17203959372010201d80dd629721fd62a7220d62bd0e4c672290508d6"
+    "2ccb722bd62d8fb1721604c801d62eb2a5040200d62fdb6308722ed630b2722f040000d6317221d6327222d633b2722f"
+    "0402017232d6347223d6359a720f0502d1edededededed720d9683020193cbc272297202938cb2722a040000017205ef"
+    "ae7216d901360e937236722c95722d937215b3721683010e722cd801d636b2a40404009683050193cbc272367202938c"
+    "b2db6308723604000001720c8f8cc7723601a393b27216721a00e4c67236040e937215dc0c14721602721a722c96830d"
+    "0193cbc2722e0e208b46196f81955540d84d8900c428cdeb86046f845893611ede69e80a6fb42dcd938c723001720c93"
+    "8c723002050290b1722f0404ec938c7233017206d801d6367224939a721e72360500938c7233029a721e722493e4c672"
+    "2e06410c4d0e860299721e722595917225050083034d0e86020e2008738734b8c85f5f555fca9f3e9c8850e37c98557c"
+    "bca0556d771b47b0374f2b0580a0b787e90586020e204c59c15a6cd475b6bd2a36896d7f0e6f2fe2630e1d97ee602265"
+    "1a2a4cb192710580e8eda1ba0186020e20bd2aca6db249a677755565ac7ec09fb657c9b61fe80b1a4233332ca4f0cded"
+    "180580d88ee16f83004d0e92c1722ec1722993e4c6722e0405e4c67229040593d0e4c6722e0508722b93e4c6722e0702"
+    "e4c67229060293e4c6722e080e722693b17226044095917219721eeded9372277206937228997219721e93b172080408"
+    "93b172080406968304019372139a7214040293da720e0172057235937211723595722ded93da720e01720c7210937212"
+    "9972100502ed93da720e01720c9a721005029372127210959372010202d802d629b2a4040200d62a9a720f0502d1eded"
+    "ed720d9683020193cbc272297202938cb2db63087229040000017205ae7216d9012b0e93722bcbd0e4c6722905089683"
+    "09019372137214937215721693da720e017205722a93da720e01720c7210937211722a93721272109372277206937228"
+    "721993b17208b17203d10100")
+LITHOS_ENFORCER_SCRIPT = (
+    "d808d601e4dc650cfe020300020002d602b2a5040000d603e4c672020605d604b2a4040000d605e4c672040605d606e4"
+    "c672040705d607e4c672020705d6080e20c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6d"
+    "e7959372010200d808d609b2a5040200d60ae4dc650cfe020300020207d60be4c672090405d60c99720b0580ade204d6"
+    "0db2db63087209040201860272080500d60ee4c6b2db6501fe0400000411d60f9a7eb2720e040000069c7eb2720e0404"
+    "00067e997206720506d610b2720e040200d1ed9683020193720372059372079a720605029683090193e4c67209070572"
+    "0693d0e4c672090508d0cd720a94b2db0702720a040000020092720c050092c172099a9a0580ce98d715720b9c720c7e"
+    "040805938c720d029592720f7e72100672107d720f05938c720d017208937ee4c672090602040400efe6c67209080e95"
+    "9372010201d1ed9683030193e4c6b2a4040200070572059372039a720505029372077206efe6c6b2a5040200090e9593"
+    "72010202d19683030193e4c6b2a4040200070572059372039a720505029372077206d10100")
+
+def _b2b(data):
+    import hashlib
+    return hashlib.blake2b(data, digest_size=32).hexdigest()
+
+
+def _lend_boxes(cfg):
+    """The emission box and the config box, only if the scripts we hold are still the ones they demand."""
+    def one(nft):
+        items = (explorer(cfg, "boxes/unspent/byTokenId/%s?limit=2" % nft) or {}).get("items") or []
+        if len(items) != 1 or not items[0].get("assets") or items[0]["assets"][0].get("tokenId") != nft:
+            raise SwapError("Lithos lending is unavailable right now.")
+        return items[0]
+    emission, config = one(LITHOS_EMISSION_NFT), one(LITHOS_CONFIG_NFT)
+    try:
+        ok = _b2b(bytes.fromhex(LITHOS_EM_SCRIPT)) in emission["ergoTree"] \
+            and config["additionalRegisters"]["R5"]["renderedValue"] == _b2b(bytes.fromhex(LITHOS_ENFORCER_SCRIPT))
+    except (KeyError, TypeError):
+        ok = False
+    if not ok:
+        sys.stderr.write("sigmaswap.py: Lithos emission or enforcer script changed; lending is switched off\n")
+        raise SwapError("Lithos has changed its lending rules. This app must be updated before it can lend again.")
+    return emission, config
+
+
+def _lend_state(emission, config):
+    reg = emission["additionalRegisters"]
+    floor, ceiling, slope = [int(x) for x in json.loads(config["additionalRegisters"]["R4"]["renderedValue"])]
+    head, tail = int(reg["R6"]["renderedValue"]), int(reg["R7"]["renderedValue"])
+    backlog = tail - head
+    active = set(x.strip() for x in reg["R5"]["renderedValue"].strip("[]").split(",") if x.strip())
+    return {"head": head, "tail": tail, "backlog": backlog, "active": active,
+            "permit": min(floor + slope * backlog, ceiling)}
+
+
+def _token_boxes(cfg, token, limit=1500):
+    out, offset = [], 0
+    while offset < limit:
+        items = (explorer(cfg, "boxes/unspent/byTokenId/%s?limit=100&offset=%d" % (token, offset)) or {}).get("items") or []
+        out.extend(items)
+        offset += 100
+        if len(items) < 100:
+            break
+    return out
+
+
+def _lender_boxes(cfg, pk_hex):
+    """This key's boxes in the queue and in the active set -> (queue boxes, collateral boxes)."""
+    def mine(b):
+        r5 = (b.get("additionalRegisters") or {}).get("R5") or {}
+        return r5.get("sigmaType") == "SSigmaProp" and r5.get("renderedValue") == pk_hex
+    queue = [b for b in _token_boxes(cfg, LITHOS_QUEUE_TOKEN) if b.get("ergoTree") == LITHOS_QUEUE_TREE and mine(b)]
+    active = [b for b in _token_boxes(cfg, LITHOS_COLLATERAL_TOKEN) if int(b.get("value", 0)) > LEND_PRINCIPAL and mine(b)]
+    return queue, active
+
+
+def _reward_tree(pk_hex):
+    """The standard mining reward script for a key: that key, 720 blocks after the box was made."""
+    return "100204a00b08cd" + pk_hex + "ea02d192a39a8cc7a70173007301"
+
+
+def _reward_boxes(cfg, pk_hex, height):
+    from ergo_lib_python.chain import Address, NetworkPrefix
+    from ergo_lib_python.ergo_tree import ErgoTree
+    tree = _reward_tree(pk_hex)
+    addr = Address.recreate_from_ergo_tree(ErgoTree.from_bytes(bytes.fromhex(tree))).to_str(NetworkPrefix.Mainnet)
+    items = (explorer(cfg, "boxes/unspent/byAddress/%s?limit=100" % urllib.parse.quote(addr, safe="")) or {}).get("items") or []
+    boxes = []
+    for b in items:
+        if b.get("ergoTree") != tree:
+            continue
+        burn = sum(int(a["amount"]) for a in b.get("assets") or [] if a.get("tokenId") == REEMISSION_TOKEN)
+        if any(a.get("tokenId") != REEMISSION_TOKEN for a in b.get("assets") or []):
+            continue                                  # nothing but re-emission tokens belongs in a reward box
+        b["_net"] = int(b["value"]) - burn
+        b["_burn"] = burn
+        b["_ready"] = int(b["creationHeight"]) + REWARD_DELAY <= height
+        boxes.append(b)
+    return boxes
+
+
+def cmd_lendinfo(req):
+    """The lending market, and where one address stands in it."""
+    cfg = req["cfg"]
+    _need_v6()
+    emission, config = _lend_boxes(cfg)
+    st = _lend_state(emission, config)
+    res = {"permit": str(st["permit"]), "backlog": st["backlog"], "active": len(st["active"]),
+           "principal": str(LEND_PRINCIPAL), "min_bid": str(LEND_MIN_FEE), "block_reward": str(LEND_BLOCK_REWARD)}
+    if req.get("address"):
+        address = req_address(req["address"])
+        pk = bytes(address.ergo_tree())[3:].hex()
+        queue, active = _lender_boxes(cfg, pk)
+        height = int(((explorer(cfg, "blocks/headers?limit=1") or {}).get("items") or [{}])[0].get("height", 0))
+        rewards = _reward_boxes(cfg, pk, height)
+        bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+        in_set = _b2b(bytes.fromhex("0008cd" + pk)) in st["active"]
+        res.update({
+            "state": "active" if (active or in_set) else "queued" if queue else "none",
+            "queued": [{"index": int(b["additionalRegisters"]["R7"]["renderedValue"]), "value": str(int(b["value"])),
+                        "ahead": max(0, int(b["additionalRegisters"]["R7"]["renderedValue"]) - st["head"])} for b in queue],
+            "active_boxes": [{"value": str(int(b["value"]))} for b in active],
+            "rewards_ready": str(sum(b["_net"] for b in rewards if b["_ready"])),
+            "rewards_ready_count": sum(1 for b in rewards if b["_ready"]),
+            "rewards_waiting": str(sum(b["_net"] for b in rewards if not b["_ready"])),
+            "rewards_waiting_count": sum(1 for b in rewards if not b["_ready"]),
+            "balance_erg": str(int(bal.get("nanoErgs", 0))),
+            "balance_lit": str(next((int(t.get("amount", 0)) for t in bal.get("tokens") or [] if t.get("tokenId") == LIT_ID), 0))})
+    return res
+
+
+def cmd_lendjoin(req):
+    """Join the collateral queue. emission box (Join) + the lender's boxes -> emission box, queue box.
+
+    The rule that costs money if broken: a queue box whose key is already in the active set is
+    forfeited, principal and permit, to whoever clears it. So this refuses outright when the address's
+    key is anywhere in the queue or the active set. One position per address at a time.
+    """
+    from ergo_lib_python.chain import ErgoBox, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction
+    cfg = req["cfg"]
+    _need_v6()
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    # the priority fee: ERG added above the floor. A fifth goes to the miner who uses the box, the rest to the pool.
+    bid = 0 if str(req.get("bid", "0")) == "0" else req_amount(req.get("bid"), "bid")
+    max_permit = req_amount(req.get("max_permit"), "limit")
+    if bid and not (LEND_MIN_FEE <= bid <= LEND_BLOCK_REWARD - LEND_PRINCIPAL):
+        raise SwapError("That priority fee is outside what a lender can offer.")
+    fee = miner_fee(cfg)
+    pk = bytes(address.ergo_tree())[3:].hex()
+    emission, config = _lend_boxes(cfg)
+    st = _lend_state(emission, config)
+    queue, active = _lender_boxes(cfg, pk)
+    if queue or active or _b2b(bytes.fromhex("0008cd" + pk)) in st["active"]:
+        raise SwapError("This address already has a position in the Lithos queue or active set. A second one from the same "
+                        "address would be forfeited, so it is refused. Use another address of your wallet.")
+    if st["permit"] > max_permit:
+        raise SwapError("The LIT permit went up since the preview (the queue grew). Please preview again.")
+    value = LEND_PRINCIPAL + bid
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+
+    def need_erg(toks):
+        n = len(set(toks) - ({LIT_ID} if toks.get(LIT_ID) == st["permit"] else set()))
+        return value + fee + change_need(n)
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, LIT_ID, st["permit"])
+    ctx, height = chain_context(cfg)
+    ereg = emission["additionalRegisters"]
+    assets = [[a["tokenId"], int(a["amount"])] for a in emission["assets"]]
+    for a in assets:
+        if a[0] == LITHOS_QUEUE_TOKEN:
+            a[1] -= 1
+    out_toks = dict(user_toks)
+    out_toks[LIT_ID] -= st["permit"]
+    outputs = [
+        _box_json(int(emission["value"]), emission["ergoTree"], height, assets,
+                  {"R4": ereg["R4"]["serializedValue"], "R5": ereg["R5"]["serializedValue"],
+                   "R6": ereg["R6"]["serializedValue"], "R7": _long_const(st["tail"] + 1)}),
+        _box_json(value, LITHOS_QUEUE_TREE, height, [(LITHOS_QUEUE_TOKEN, 1), (LIT_ID, st["permit"])],
+                  {"R4": _long_const(LEND_DUST + bid // 5), "R5": "08cd" + pk, "R6": "0200", "R7": _long_const(st["tail"])}),
+        _box_json(fee, MINER_FEE_TREE, height),
+    ] + _user_boxes_json(address, height, out_toks, user_erg - value - fee)
+    tx_json = {"inputs": [{"boxId": emission["boxId"],
+                           "extension": {"0": "0200", "2": "07" + pk,                      # Join, for this lender key
+                                         "64": _bytes_const(bytes.fromhex(LITHOS_EM_SCRIPT)),
+                                         "65": _bytes_const(bytes.fromhex(LITHOS_ENFORCER_SCRIPT))}}]
+                         + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [{"boxId": config["boxId"]}], "outputs": outputs}
+    boxes = [ErgoBox.from_json(emission)] + chosen
+    data = [ErgoBox.from_json(config)]
+    try:
+        from ergo_lib_python.transaction import UnsignedTransaction
+        from ergo_lib_python.wallet import Wallet
+        tx = UnsignedTransaction.from_json(json.dumps(tx_json))
+        Wallet([]).sign_tx_input(tx, 0, boxes, data, ctx)       # emission guard, emission script and enforcer all accept
+        reduced = ReducedTransaction.from_unsigned_tx(tx, boxes, data, ctx)
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos join refused: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("The join could not be prepared. Someone else may have joined at the same moment; please try again.")
+    return {"reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"), "tx_id": hexid(tx.id),
+            "address": addr_str, "value": str(value), "bid": str(bid), "permit": str(st["permit"]),
+            "index": st["tail"], "ahead": st["backlog"], "miner_fee": str(fee), "watch_box": emission["boxId"]}
+
+
+def cmd_lendclaim(req):
+    """Collect the mining reward boxes a lender's key has earned and that are 720 blocks old.
+
+    Ergo's re-emission rule applies to them: the re-emission tokens a reward box carries must be
+    burned and the same amount of ERG paid to the re-emission contract. What is left is the lender's."""
+    from ergo_lib_python.chain import ErgoBox, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction, UnsignedTransaction
+    cfg = req["cfg"]
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    pk = bytes(address.ergo_tree())[3:].hex()
+    ctx, height = chain_context(cfg)
+    ready = [b for b in _reward_boxes(cfg, pk, height) if b["_ready"]][:30]
+    if not ready:
+        raise SwapError("No rewards are ready to collect yet. A reward can be collected 720 blocks (about a day) after its block.")
+    total = sum(int(b["value"]) for b in ready)
+    burn = sum(b["_burn"] for b in ready)
+    net = total - burn - fee
+    if net < 1000000:
+        raise SwapError("The rewards ready so far are too small to collect.")
+    outputs = [_box_json(net, bytes(address.ergo_tree()).hex(), height), _box_json(fee, MINER_FEE_TREE, height)]
+    if burn:
+        outputs.append(_box_json(burn, PAY2REEMISSION_TREE, height))
+    clean = [{k: v for k, v in b.items() if not k.startswith("_")} for b in ready]
+    boxes = [ErgoBox.from_json(b) for b in clean]
+    try:
+        tx = UnsignedTransaction.from_json(json.dumps({"inputs": [{"boxId": b["boxId"], "extension": {}} for b in clean],
+                                                       "dataInputs": [], "outputs": outputs}))
+        reduced = ReducedTransaction.from_unsigned_tx(tx, boxes, [], ctx)
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos reward claim failed: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("The rewards could not be collected right now. Please try again.")
+    return {"reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"), "tx_id": hexid(tx.id),
+            "address": addr_str, "net": str(net), "boxes": len(ready), "reemission": str(burn), "miner_fee": str(fee),
+            "watch_box": ready[0]["boxId"]}
+
+
+
 def cmd_lithosstats(req):
     """Pool figures from Lithos's own public statistics API, passed through as they are."""
     res = {}
@@ -3600,6 +3890,7 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions,
             "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild,
             "netstats": cmd_netstats, "portfolio": cmd_portfolio,
+            "lendinfo": cmd_lendinfo, "lendjoin": cmd_lendjoin, "lendclaim": cmd_lendclaim,
             "ldlpquote": cmd_ldlpquote, "ldlpbuild": cmd_ldlpbuild, "ldpositions": cmd_ldpositions, "ldclaim": cmd_ldclaim,
             "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
             "ldstatus": cmd_ldstatus, "lithosstats": cmd_lithosstats, "lithosminer": cmd_lithosminer,

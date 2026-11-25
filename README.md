@@ -11,7 +11,7 @@ the app prepares a transaction, and your wallet shows it and signs it.
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
 | **SigmaBridge** | Take funds out of Ergo: ERG and tokens to other chains over the Rosen bridge, or ERG sold for another coin through the Swapuz exchange | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 | **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
-| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, and providing liquidity there | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
+| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, providing liquidity there, and lending collateral to the pool | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -60,6 +60,12 @@ app, do not sign it.
 - **A LithosDex liquidity position is an NFT.** Whoever holds the LD-NFT owns the position, its fees and its
   share of the pool. Send it away or burn it and the position is gone. Collect fees before closing: closing
   leaves uncollected fees behind for good.
+- **Lending collateral cannot be cancelled.** A position locks 2.915 ERG, an optional priority fee and a LIT
+  permit (several thousand LIT) until a Lithos miner uses it. How long that takes depends on the queue and on
+  how often Lithos finds blocks; if it stopped finding blocks the position would keep waiting. When it is used
+  the LIT returns at once and the block's reward (3 ERG plus fees) is paid to your key, collectable in the app
+  about a day later. One position per address: Lithos's rules forfeit a duplicate, so the app refuses one, but
+  it cannot stop you opening a second from the same address elsewhere. Needs wallet app 2.5.1 or newer.
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
 

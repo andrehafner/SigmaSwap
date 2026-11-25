@@ -176,6 +176,14 @@
   transaction is reduced against a stand-in box of the same value owned by that key and the real box id is put
   back, because the library cannot evaluate the contract (see limitations). Open orders are found on-chain by
   the contracts' template hashes and kept only if they belong to the address and the ERG:LIT pool.
+- **SigmaLithos lending** (needs ergo-lib 0.29): `lendinfo` reads the emission and config boxes (permit =
+  min(floor + slope x backlog, ceiling), queue length, active set) and where the address's key stands (queue box,
+  active set, reward boxes). `lendjoin` spends the emission box together with the user's boxes into a queue box
+  (2.915 ERG + priority fee, queue token, LIT permit; R4 = 0.005 ERG + a fifth of the fee, R5 the lender key) and is
+  only returned if the emission guard, emission script and enforcer accept it; it refuses any key already queued or
+  active, since Lithos forfeits duplicates. `lendclaim` sweeps the key's matured mining-reward boxes (720 blocks old)
+  and pays their re-emission tokens' worth to Ergo's re-emission contract as the network requires. A join is
+  irreversible; there is no cancel.
 - **SigmaLithos liquidity** (needs ergo-lib 0.29; otherwise the screen says it is unavailable): `ldlpbuild` places a
   deposit order (ERG + LIT + a 0.6 ERG position deposit) after simulating its fill against the pool and the order
   contract; a miner's fill creates a provision box and mints the NFT that owns it to the user. `ldpositions` lists
@@ -331,6 +339,10 @@
   let through with a warning. The gate is a convenience, not a control: the signing link itself cannot see the
   wallet version, and an old wallet that follows one simply fails to sign. Three orders were placed and filled on
   mainnet with a 2.5.1 build; a cancel has not confirmed yet (the one attempt lost the race to a fill).
+- **Lithos lending has not been used on-chain from this app.** Joins at several priority fees are accepted by the
+  live emission contracts in simulation, and a reward sweep was built from a real lender's matured boxes; none was
+  signed or broadcast. The Lithos scripts are pinned byte for byte: if Lithos upgrades them, joins are refused (the
+  simulation fails) until the pins are updated. A locked position cannot be withdrawn by its owner.
 - **LithosDex liquidity has not been used on-chain from this app.** Deposit, fee collection and closing were built and
   accepted by Lithos's real contracts in simulation against live boxes and real providers' positions; none was signed
   or broadcast. A position is a bearer NFT: losing or transferring it loses the position.
