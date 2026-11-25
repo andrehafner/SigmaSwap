@@ -176,6 +176,15 @@
   transaction is reduced against a stand-in box of the same value owned by that key and the real box id is put
   back, because the library cannot evaluate the contract (see limitations). Open orders are found on-chain by
   the contracts' template hashes and kept only if they belong to the address and the ERG:LIT pool.
+- **SigmaLithos liquidity** (needs ergo-lib 0.29; otherwise the screen says it is unavailable): `ldlpbuild` places a
+  deposit order (ERG + LIT + a 0.6 ERG position deposit) after simulating its fill against the pool and the order
+  contract; a miner's fill creates a provision box and mints the NFT that owns it to the user. `ldpositions` lists
+  the provisions whose NFT the address holds, with their share of the reserves and their fees. `ldclaim` builds
+  `[vault (claim), provision (claim), user boxes incl. the NFT] → [vault, provision, user, fee]` and has the vault and
+  the provision contract accept it before the wallet sees it. `ldredeem` places a closing order holding the NFT,
+  simulated against pool, provision and order, and refuses while fees are uncollected (closing forfeits them). The
+  provision guard and logic scripts were rebuilt from Lithos's pinned templates; their hashes are embedded in the
+  live pool contract, which ties them to the deployment.
 - **SigmaLithos dashboard / mining**: `lithosstats` passes Lithos's public API through (cached a minute);
   `lithosminer` reads the address's last 200 transactions and counts those whose first input is Lithos's payout
   contract, holding contract, or a collateral box. Nothing is stored.
@@ -322,6 +331,9 @@
   let through with a warning. The gate is a convenience, not a control: the signing link itself cannot see the
   wallet version, and an old wallet that follows one simply fails to sign. Three orders were placed and filled on
   mainnet with a 2.5.1 build; a cancel has not confirmed yet (the one attempt lost the race to a fill).
+- **LithosDex liquidity has not been used on-chain from this app.** Deposit, fee collection and closing were built and
+  accepted by Lithos's real contracts in simulation against live boxes and real providers' positions; none was signed
+  or broadcast. A position is a bearer NFT: losing or transferring it loses the position.
 - **Fills depend on Lithos miners** and on a thin LIT market. The operator's first three orders were each filled
   within about three minutes (two in the block they confirmed in); an order whose minimum is out of reach waits.
   A cancel sent while a fill is already in the mempool is refused by the node as a double spend; that happened once

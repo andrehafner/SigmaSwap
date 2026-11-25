@@ -2418,14 +2418,72 @@ LD_BUY_PINNED = (
     "d072029272067311909c9c7e99c17201b2720773120006720b720c9c9a9a7206731373149a9c7e998c720402b2720773"
     "150006720a9c720b720c907eb0a57316d9010d4163d802d60f8c720d02d6108c720d019593c2720f73179a7210c1720f"
     "72100673187202")
+# the two liquidity orders: add both sides for a provision (and the NFT that owns it), and close one
+LD_DEPOSIT_PINNED = (
+    "1b8a051d040006084c444f570505050508cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16"
+    "f817980402040004000e205d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d0100040004"
+    "0205feffffffffffffffff010400040204020404040205000300020002ff020106084c444f5806060606040006084c44"
+    "4f530101010106010006010005000e691005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07"
+    "029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300"
+    "000193c2b2a57301007473027303830108cdeeac93b1a5730406084c444f5402020202d803d601b2a4730000d6027301"
+    "d60373029595ed93db6508fe730391b1db630872017304938cb2db630872017305000173067307d80ed604b2db6308a7"
+    "730800d605b2db63087201730900d6068c720501d6077e99730ae4c67201040506d608e4c672010611d6097e99c17201"
+    "b27208730b0006d60a9d9c720272077209d60b7e998c720502b27208730c0006d60c9d9c7e8c720402067207720bd60d"
+    "a1720a720cd60eb2a5730d00d60fb2a5730e00d610db6308720fd611b27210730f01860272067310d196830a0193e5dc"
+    "650cfe02731173120273137314938c720401720692720d7315927ee4c6720e070506720d93c2720fd07203938cb27210"
+    "73160001c57201927e9ac1720fc1720e069a99997ec1a706720273179591720a720c9d9c99720a720c72097207731893"
+    "8c7211017206927e8c721102069591720c720a9d9c99720c720a720b72077319907eb0a5731ad901124163d802d6148c"
+    "721202d6158c7212019593c27214731b9a7215c17214721506731c7203")
+LD_REDEEM_PINNED = (
+    "1b940418040008cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980404040004000e"
+    "205d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d01000402040205feffffffffffffff"
+    "ff010402040005000300020002ff02020400040006084c444f5301010101040205000e691005040004000e36100204a0"
+    "0b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a7017300"
+    "73011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a5730406084c"
+    "444f5402020202d802d601b2a4730000d60273019595ed93db6508fe730291b1db630872017303938cb2db6308720173"
+    "04000173057306d808d603b2a4730700d604b2a5730800d6057ee4c67203070506d606e4c672010611d6077e997309e4"
+    "c67201040506d608b2db63087201730a00d6098c720801d60ab2db63087204730b0186027209730cd19683070193e5dc"
+    "650cfe02730d730e02730f731093e4c67203060e8cb2db6308a77311000193c27204d07202927ec1720406999a7e9ac1"
+    "a7c17203069d9c72057e99c17201b272067312000672077313938c720a017209927e8c720a02069d9c72057e998c7208"
+    "02b27206731400067207907eb0a57315d9010b4163d802d60d8c720b02d60e8c720b019593c2720d73169a720ec1720d"
+    "720e0673177202")
 # sha256 of each contract without its constants: how the explorer indexes order boxes
 LD_SELL_TEMPLATE_HASH = "b4fd5d9be2ed32a5cc516e431bf317033d1033078026bb04baf7ae355c665dfc"
 LD_BUY_TEMPLATE_HASH = "7122d56978cf08f66ff5168a160e9e750002c62e79a6d985503da8ad02f11a98"
+LD_DEPOSIT_TEMPLATE_HASH = "28027ccf9c2a5ac3d31178e97a387aae3207ddec642b5662e63af30bbe642c17"
+LD_REDEEM_TEMPLATE_HASH = "d67c6f6e4dfaba9b7aefce23c63add22dbc5fdd34a27946771965be943baeb04"
+_LD_PINNED = {"sell": LD_SELL_PINNED, "buy": LD_BUY_PINNED, "deposit": LD_DEPOSIT_PINNED, "redeem": LD_REDEEM_PINNED}
+_LD_TEMPLATE_HASHES = (LD_SELL_TEMPLATE_HASH, LD_BUY_TEMPLATE_HASH, LD_DEPOSIT_TEMPLATE_HASH, LD_REDEEM_TEMPLATE_HASH)
+
+# The rest of the ERG:LIT deployment (Lithos-Client, lithosdex/LDHelpers.scala and LDContracts.scala).
+# A liquidity position is a "provision" box holding one provision token under the guard script below;
+# the guard runs the provision logic handed to it in context variable 64. Both were rebuilt from Lithos's
+# pinned templates and tie back to the chain: the hash of this logic is inside this guard, the hash of
+# this guard is inside the live pool box's script, and every open provision sits at this guard.
+LD_VAULT_NFT = "7f45bcbf13b9925c3eef35ff247ae46b80db2e2703ce2a8bfddf294e1e60c2d7"
+LD_PROV_TOKEN = "b279187c993465c666cb17646fb87325dd7d03de6ac16dfac9c50eaea71f2fc6"
+LD_PROVISION_MIN = 600000000     # nanoERG a provision box holds; it comes back when the position is closed
+LD_VAULT_MIN = 100000000
+LD_PROVISION_GUARD_TREE = (
+    "1b31010e20245ef9157dbd5f538a9240da4d631863cd44a2b132afda94555063a51e12aefbea02d193cbe4e3400e7300"
+    "d40840")
+LD_PROVISION_LOGIC_VALUE = (
+    "d809d601e4e30002d602e4c6a7060ed603aea4d9010363aedb63087203d901054d0e938c7205017202d604b2a5db6508"
+    "fe00d605db6308a7d606e4c6a70705d607e4c6a70406d608e4c6a70506d6090e20c0b21ac51481a5d242809d9b1e189a"
+    "8baf3803fe347ca01833c1aeb380e6eb29959372010200d1eded938cb2db6308b2a4040000040000010e207f45bcbf13"
+    "b9925c3eef35ff247ae46b80db2e2703ce2a8bfddf294e1e60c2d772039683080193c27204c2a792c17204c1a793db63"
+    "087204720593e4c67204060e720293e4c672040705720692e4c672040406720792e4c6720405067208efe6c67204080e"
+    "959372010201d1eded7203938cb2db6308b2a4040000040000017209afa5d9010a63efaedb6308720ad9010c4d0e938c"
+    "720c017202959372010202d1ed8f8cc7a70199a304c094409683090193c27204c2a792c17204c1a793db630872047205"
+    "93e4c672040406720793e4c672040506720893e4c67204060e720293e4c6720407057206918cc772040199a304d00fef"
+    "e6c67204080e959372010203d1eded7203938cb2db6308b2a40400000400000172099683050193c27204c2a792c17204"
+    "c1a793db63087204720593e4c67204060e7202efe6c67204080ed10100")
 _LD_SENTINELS = {
     "pk": bytes.fromhex("08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
     "pool": bytes.fromhex("0e20" + "5d" * 32),
     "ex": bytes.fromhex("06084c444f5301010101"), "mf": bytes.fromhex("06084c444f5402020202"),
     "base": bytes.fromhex("06084c444f5503030303"), "min": bytes.fromhex("06084c444f5604040404"),
+    "dx": bytes.fromhex("06084c444f5705050505"), "shares": bytes.fromhex("06084c444f5806060606"),
 }
 # where Lithos rollups sit while they pay out / collect proofs (P2S addresses of Payout and Holding_Guard)
 LITHOS_PAYOUT_ADDRESS = "3VaP5ZZQFaC1ucEnpUue1ZfgmX2bRamvJezvrVxfxNYmzy4fi4c9XFRmc5k3cfzw1YUFLdRHrX74tvGtpoPvh9NXZQSoSDVUS3DqdurRuVr7z6fkZkNRGZDjMZWHPZzSNRAKETELbx34wi1vqmNAqVMqHsHsTWax2XfdVaphxAsvv5HPbNkHp4tPg3APPzcC54WHuvfDqG8VaftmdZvqxh8G9xhfdd9LnUdFGQYRt3hLx6XcSqHmezE3ZH6KAG8pLbPp6LNVgiLdyFuunf9wA6EixdWxtXRaa7FG7CtARqWaRicNGLAdey9jdL5iwwHzYizAa2J42yjgoSxWF5nNz3Ma7LBdAxoQmfQwDsHWaKrP5ovicNkzMurGY8JUFTPMzR5nyCYfY6zoqce5Riubf4hZdqYUTD4vb4prUiJaFhYaUVwwMP73ZK6V54jiRyJArdseAkvXDnt3BbdFtMPvEswXcg5utsTjbzHmhXbnD7KiiQPLYzMdSXW4Ts5CCbVhqiK5Sd2DQbhTi3yvpdbQk1XZp9gienjRVkYT6kGnnnzGQXBVN1ffv1jVBTZ6b1TFqMkC39R4cChPHQiYh7gXyBjFHo2vTdTAWbUpHjjqu6HafRsawpaAtqrv1n73N2MhvmDgsgq9HP1KeHoc9qMbVTRznf3tHSLp2s4NaP3WhukTcECzPZ75BEStM1xzTy4BamkV2DCS44Fx3tMiW7CQkfPDw3o62jMRUBof6rQMHgsexwrHVfKzAbhwTCY5hNaxgXEVGjogz6Pin8P29dmnRNm9qosShogi6To6hMUXG1aFLFjBTwhprJ3L2JRfaYWEC41un66ZjPvExQaW65htdyACjKBsL74xFm6LmRs5XXAzctP23y3dMKZokCQttH87kBwMh8MCnAsv6Vba3cu8TiYiBJTdJG4K4dz4F7Yy3AC3VisGHcZ91UNPcfAQxb2wvp65CYXMiiapV5tq3FXrpNqpDuRwnkxAeVPcYW2Qm1qHQQcPpC2ZdiXEtFJAXcUCKnFHuYkoXCPfh4tg1P9zNFeSu6ntjkvfru3V6mmukBmupinCzr2Eo48gHj19E49ShwLszqqhrCQXcWRK7HTgmjS5xCfC5AcxaZW3fQCMELLSAmw6othTs7iusf84SjqvwfMZshtpaeiDBMTU6WvJ9iNhPbdtKKjA8vhE6bfNLVGtFgx6xepxq36mYYZpB3dVxoQpYN5WcsLXtmfLFJB5Nx7FG9eMbgLSPJLLcKo4UidBkmQfo7VxJZGGqyZQa29eGZf3YRd19J4GgxtRyXKDJ61x6mTxFdMuEWsiehPD7B2V5RVDtTUUz7MvZUbCpyk2vLxnPf5euKvQ7hkxohvvkLMwAhYn3pFudWsubNG42BHezbNpwPPtm1o8aAhbNktdrZgXPXV6WNMkHkmzG4H7LRguwBs1n132Tz7WZd5CnkREw3WDWwfSiSYkQAxm2SxX3ahnGx2aSk2V2NuNPShbGfdCHzHDUCLwn4wQ1cRd5VUTVwdrQwzYj6vZwuE3LiPd4nfRMzhMus5Y2Q4HPLHabzY1MDi2PU4uaHsPWZF9SHt6zDMoj88U4zddQLHJMBe47hjwT1nxRymibX4eZCJ1JxrF7cvtcPh7z2LGP6kVZmNySF2tRHcHdddPdPNuXTmwnQMyX8iAU515XU9z8n9NmQPXhfEKUT14AZfiyM2mws5SA8cXYEzQyTqy6fYbk8s8Cwe5FoKpF3cNuEeq4"
@@ -2462,7 +2520,7 @@ def _ld_bigint(v):
 
 def _ld_segments(kind):
     """The pinned tree cut at its sentinels -> (fixed byte runs, term names in order)."""
-    raw = bytes.fromhex(LD_SELL_PINNED if kind == "sell" else LD_BUY_PINNED)
+    raw = bytes.fromhex(_LD_PINNED[kind])
     size, i = _read_vlq(raw, 1)
     body = raw[i:]
     if raw[0] != 0x1B or size != len(body):
@@ -2477,14 +2535,18 @@ def _ld_segments(kind):
     return segs, names
 
 
-def ld_order_tree(kind, pk_const, min_quote, base=None):
-    """ErgoTree bytes of a LithosDex swap order on the ERG:LIT pool, for the owner key `pk_const`
-    (35 bytes, 08cd + key). kind "sell" sells `base` nanoERG for at least `min_quote` LIT units;
-    "buy" sells the LIT in the box for at least `min_quote` nanoERG after the executor fee."""
+def ld_order_tree(kind, pk_const, min_quote=None, base=None, dx=None, shares=None):
+    """ErgoTree bytes of a LithosDex order on the ERG:LIT pool, for the owner key `pk_const`
+    (35 bytes, 08cd + key).
+      sell     sells `base` nanoERG for at least `min_quote` LIT units
+      buy      sells the LIT in the box for at least `min_quote` nanoERG after the executor fee
+      deposit  adds up to `dx` nanoERG and the LIT in the box for at least `shares` pool shares
+      redeem   closes the provision owned by the NFT in the box"""
     vals = {"pk": pk_const, "pool": b"\x0e\x20" + bytes.fromhex(LD_POOL_NFT), "ex": _ld_bigint(LD_EXECUTOR_FEE),
-            "mf": _ld_bigint(LD_MAX_MINER_FEE), "min": _ld_bigint(min_quote)}
-    if kind == "sell":
-        vals["base"] = _ld_bigint(base)
+            "mf": _ld_bigint(LD_MAX_MINER_FEE)}
+    for name, v in (("min", min_quote), ("base", base), ("dx", dx), ("shares", shares)):
+        if v is not None:
+            vals[name] = _ld_bigint(v)
     segs, names = _ld_segments(kind)
     body = b"".join(seg + vals[k] for seg, k in zip(segs, names)) + segs[-1]
     return b"\x1b" + _vlq(len(body)) + body
@@ -2493,7 +2555,7 @@ def ld_order_tree(kind, pk_const, min_quote, base=None):
 def ld_parse_tree(tree):
     """-> {"kind", "pk" (35 bytes), "pool", "ex", "mf", "min", "base"} for a LithosDex swap
     order tree, or None. A tree counts only if rebuilding it from its terms gives it back."""
-    for kind in ("sell", "buy"):
+    for kind in ("sell", "buy", "deposit", "redeem"):
         try:
             if tree[0] != 0x1B:
                 return None
@@ -2520,7 +2582,7 @@ def ld_parse_tree(tree):
                     out[k], p = int.from_bytes(body[q:q + n], "big", signed=True), q + n
             if not ok or body[p:] != segs[-1] or out["pk"][:2] != b"\x08\xcd":
                 continue
-            rebuilt = ld_order_tree(kind, out["pk"], out["min"], out.get("base")) \
+            rebuilt = ld_order_tree(kind, out["pk"], out.get("min"), out.get("base"), out.get("dx"), out.get("shares")) \
                 if (out["pool"], out["ex"], out["mf"]) == (LD_POOL_NFT, LD_EXECUTOR_FEE, LD_MAX_MINER_FEE) else None
             out["ours"] = rebuilt == tree        # exactly what this app would have built for these terms
         except (IndexError, ValueError):
@@ -2768,20 +2830,29 @@ def cmd_ldbuild(req):
 
 
 def _ld_order_view(box, pk=None):
-    """An explorer box as a swap order on the ERG:LIT pool -> dict, or None."""
+    """An explorer box as an order on the ERG:LIT pool -> dict, or None."""
     try:
         terms = ld_parse_tree(bytes.fromhex(box["ergoTree"]))
         if not terms or terms["pool"] != LD_POOL_NFT or (pk is not None and terms["pk"] != pk):
             return None
         assets = box.get("assets") or []
-        if terms["kind"] == "sell":
-            amount, frm, to = terms["base"], ERG_ID, LIT_ID
-        else:
+        kind = terms["kind"]
+        view = {"box_id": box["boxId"], "kind": kind, "value": str(int(box["value"]))}
+        if kind == "sell":
+            view.update({"from": ERG_ID, "to": LIT_ID, "amount": str(terms["base"]), "min_out": str(terms["min"])})
+        elif kind == "buy":
             if not assets or assets[0].get("tokenId") != LIT_ID:
                 return None
-            amount, frm, to = int(assets[0]["amount"]), LIT_ID, ERG_ID
-        return {"box_id": box["boxId"], "kind": terms["kind"], "from": frm, "to": to, "amount": str(amount),
-                "min_out": str(terms["min"]), "value": str(int(box["value"]))}
+            view.update({"from": LIT_ID, "to": ERG_ID, "amount": str(int(assets[0]["amount"])), "min_out": str(terms["min"])})
+        elif kind == "deposit":
+            if not assets or assets[0].get("tokenId") != LIT_ID:
+                return None
+            view.update({"amount_x": str(terms["dx"]), "amount_y": str(int(assets[0]["amount"])), "min_shares": str(terms["shares"])})
+        else:
+            if not assets or int(assets[0].get("amount", 0)) != 1:
+                return None
+            view.update({"nft": assets[0]["tokenId"]})
+        return view
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -2792,13 +2863,15 @@ def cmd_ldorders(req):
     address = req_address(req.get("address"))
     pk = bytes(address.ergo_tree())[1:]
     orders = []
-    for template_hash in (LD_SELL_TEMPLATE_HASH, LD_BUY_TEMPLATE_HASH):
+    wanted = ("sell", "buy") if req.get("kinds") == "swap" else ("deposit", "redeem") if req.get("kinds") == "liquidity" \
+        else ("sell", "buy", "deposit", "redeem")
+    for template_hash in _LD_TEMPLATE_HASHES:
         offset = 0
         while offset < 1000:
             page = explorer(cfg, "boxes/unspent/byErgoTreeTemplateHash/%s?limit=100&offset=%d"
                             % (template_hash, offset)) or {}
             items = page.get("items") or []
-            orders.extend(o for o in (_ld_order_view(b, pk) for b in items) if o)
+            orders.extend(o for o in (_ld_order_view(b, pk) for b in items) if o and o["kind"] in wanted)
             offset += 100
             if len(items) < 100:
                 break
@@ -2877,7 +2950,8 @@ def cmd_ldcancel(req):
             or any(o["ergoTree"] != own for o in spent["outputs"][:-1]):
         raise SwapError("The cancellation could not be prepared. Please try again.")
     return {"reduced_tx": base64.urlsafe_b64encode(data).decode("ascii"), "tx_id": hexid(final.unsigned_tx().id),
-            "address": addr_str, "from": order["from"], "amount": order["amount"], "value": str(value),
+            "address": addr_str, "kind": order["kind"], "from": order.get("from"), "amount": order.get("amount"),
+            "amount_x": order.get("amount_x"), "amount_y": order.get("amount_y"), "value": str(value),
             "miner_fee": str(fee), "checked": checked}
 
 
@@ -2915,6 +2989,403 @@ def cmd_ldstatus(req):
     if b and b.get("spentTransactionId") and b["spentTransactionId"] != tx_id:
         return {"state": "failed"}
     return {"state": "unknown"}
+
+
+# ---- LithosDex liquidity: deposit, positions, fee claims, closing ----------------
+# All of it needs lib_evaluates_v6(): these transactions spend or are checked against
+# Lithos's own contracts, and nothing here is handed to a wallet unproven.
+
+def _ld_registers(raw):
+    reg = raw["additionalRegisters"]
+    big = lambda r: int(reg[r]["renderedValue"].strip("CBigInt()"))      # noqa: E731
+    return {"liquidity": int(reg["R4"]["renderedValue"]), "pend": [int(x) for x in json.loads(reg["R6"]["renderedValue"])],
+            "acc_x": big("R7"), "acc_y": big("R8")}
+
+
+def _long_const(v):
+    return (b"\x05" + _vlq((v << 1) ^ (v >> 63))).hex()
+
+
+def _bytes_const(raw_bytes):
+    return (b"\x0e" + _vlq(len(raw_bytes)) + raw_bytes).hex()
+
+
+def _box_json(value, tree, height, assets=(), regs=None):
+    return {"value": int(value), "ergoTree": tree, "creationHeight": height,
+            "assets": [{"tokenId": t, "amount": int(a)} for t, a in assets if int(a) > 0],
+            "additionalRegisters": regs or {}}
+
+
+def _user_boxes_json(address, height, toks, erg, first_token=None):
+    """JSON form of user_outputs(): the user's change, split when it carries many tokens."""
+    own = bytes(address.ergo_tree()).hex()
+    tok_list = sorted(((t, a) for t, a in toks.items() if a > 0), key=lambda kv: (kv[0] != first_token, kv[0]))
+    chunks = [tok_list[i:i + MAX_TOKENS_PER_BOX] for i in range(0, len(tok_list), MAX_TOKENS_PER_BOX)] or [[]]
+    extra = change_box_min_value(MAX_TOKENS_PER_BOX)
+    main = erg - extra * (len(chunks) - 1)
+    if main < change_box_min_value(len(chunks[0])):
+        raise SwapError("Insufficient ERG on this address for this transaction plus the network fee.")
+    return [_box_json(main if i == 0 else extra, own, height, chunk) for i, chunk in enumerate(chunks)]
+
+
+def _need_v6():
+    if not lib_evaluates_v6():
+        raise SwapError("Liquidity on LithosDex is not available on this server yet.")
+
+
+def ld_vault(cfg):
+    items = (explorer(cfg, "boxes/unspent/byTokenId/%s?limit=2" % LD_VAULT_NFT) or {}).get("items") or []
+    if len(items) != 1 or not (items[0].get("assets") or []) or items[0]["assets"][0].get("tokenId") != LD_VAULT_NFT:
+        raise SwapError("The LithosDex fee vault is unavailable right now.")
+    v = items[0]
+    reg = v["additionalRegisters"]
+    v["_acc_x"] = int(reg["R4"]["renderedValue"].strip("CBigInt()"))
+    v["_acc_y"] = int(reg["R5"]["renderedValue"].strip("CBigInt()"))
+    return v
+
+
+def _ld_split(pool, supply, x, y):
+    """How a deposit order offering x nanoERG and y LIT is filled (the executor's own arithmetic)."""
+    by_x, by_y = x * supply // pool.rx, y * supply // pool.ry
+    excess_x = (by_x - by_y) * pool.rx // supply if by_x > by_y else 0
+    excess_y = (by_y - by_x) * pool.ry // supply if by_y > by_x else 0
+    return {"shares": min(by_x, by_y), "taken_x": x - excess_x, "taken_y": y - excess_y,
+            "excess_x": excess_x, "excess_y": excess_y}
+
+
+def cmd_ldlpquote(req):
+    """The pool as a liquidity provider sees it, and what adding `amount` nanoERG would take and give."""
+    cfg = req["cfg"]
+    _need_v6()
+    pool = ld_pool(cfg)
+    st = _ld_registers(pool.raw)
+    supply = LD_LOCKED_LP - st["liquidity"]
+    res = {"reserve_erg": str(pool.rx), "reserve_lit": str(pool.ry), "supply": str(supply),
+           "provision_min": str(LD_PROVISION_MIN), "executor_fee": str(LD_EXECUTOR_FEE), "returned": str(LD_RETURNED),
+           "pool_fee_bps": pool.fee_x + pool.fee_y}
+    if req.get("amount") is not None:
+        x = req_amount(req.get("amount"), "amount")
+        y = -(-x * pool.ry // pool.rx)                      # the matching LIT, rounded up
+        sp = _ld_split(pool, supply, x, y)
+        if sp["shares"] <= 0:
+            raise SwapError("That amount is too small for this pool.")
+        res.update({"amount_x": str(x), "amount_y": str(y), "shares": str(sp["shares"]),
+                    "share_bps": sp["shares"] * 10000 // (supply + sp["shares"])})
+    if req.get("address"):
+        req_address(req["address"])
+        bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+        res["balance_erg"] = str(int(bal.get("nanoErgs", 0)))
+        res["balance_lit"] = str(next((int(t.get("amount", 0)) for t in bal.get("tokens") or [] if t.get("tokenId") == LIT_ID), 0))
+    return res
+
+
+def _prove(tx_json, boxes, ctx, indexes):
+    """Every listed input's contract must accept this transaction with no key at all."""
+    from ergo_lib_python.transaction import UnsignedTransaction
+    from ergo_lib_python.wallet import Wallet
+    tx = UnsignedTransaction.from_json(json.dumps(tx_json))
+    for i in indexes:
+        Wallet([]).sign_tx_input(tx, i, boxes, [], ctx)
+    return tx
+
+
+def ld_simulate_deposit(pool, order_box, x, y, address, ctx, height):
+    """The fill of a deposit order as a miner would build it; pool and order must both accept. -> shares."""
+    from ergo_lib_python.chain import ErgoBox
+    raw = pool.raw
+    try:
+        st = _ld_registers(raw)
+        supply = LD_LOCKED_LP - st["liquidity"]
+        sp = _ld_split(pool, supply, x, y)
+        reg = raw["additionalRegisters"]
+        a = raw["assets"]
+        own = bytes(address.ergo_tree()).hex()
+        order_value = int(json.loads(order_box.json())["value"])
+        outputs = [
+            _box_json(int(raw["value"]) + sp["taken_x"], raw["ergoTree"], height,
+                      [(a[0]["tokenId"], 1), (a[1]["tokenId"], int(a[1]["amount"]) + sp["taken_y"]), (a[2]["tokenId"], int(a[2]["amount"]) - 1)],
+                      {"R4": _long_const(st["liquidity"] - sp["shares"]), "R5": reg["R5"]["serializedValue"],
+                       "R6": reg["R6"]["serializedValue"], "R7": reg["R7"]["serializedValue"], "R8": reg["R8"]["serializedValue"]}),
+            _box_json(LD_PROVISION_MIN, LD_PROVISION_GUARD_TREE, height, [(LD_PROV_TOKEN, 1)],
+                      {"R4": _ld_bigint(st["acc_x"]).hex(), "R5": _ld_bigint(st["acc_y"]).hex(),
+                       "R6": _bytes_const(bytes.fromhex(raw["boxId"])), "R7": _long_const(sp["shares"])}),
+            # the owner: the NFT that owns the provision (its id is the pool box's id), and whatever did not fit
+            _box_json(order_value - sp["taken_x"] - LD_PROVISION_MIN - LD_EXECUTOR_FEE, own, height,
+                      [(raw["boxId"], 1), (LIT_ID, sp["excess_y"])]),
+            _box_json(LD_EXECUTOR_FEE - LD_MAX_MINER_FEE, own, height),
+            _box_json(LD_MAX_MINER_FEE, MINER_FEE_TREE, height)]
+        _prove({"inputs": [{"boxId": raw["boxId"], "extension": {"0": "0201"}},            # pool: deposit
+                           {"boxId": hexid(order_box.box_id), "extension": {}}],
+                "dataInputs": [], "outputs": outputs}, [ErgoBox.from_json(raw), order_box], ctx, (0, 1))
+    except SwapError:
+        raise
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos deposit simulation failed: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("This deposit could not be filled at the current pool price. Please preview it again.")
+    return sp["shares"]
+
+
+def cmd_ldlpbuild(req):
+    """Place a deposit order: ERG and LIT in, and when a miner fills it, a provision plus the NFT that owns it."""
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix, Token, TokenId
+    from ergo_lib_python.ergo_tree import ErgoTree
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+    cfg = req["cfg"]
+    _need_v6()
+    x = req_amount(req.get("amount"), "amount")
+    max_y = req_amount(req.get("max_y"), "limit")
+    min_shares = req_amount(req.get("min_shares"), "limit")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    pool = ld_pool(cfg)
+    supply = LD_LOCKED_LP - _ld_registers(pool.raw)["liquidity"]
+    y = -(-x * pool.ry // pool.rx)
+    sp = _ld_split(pool, supply, x, y)
+    # the price may have moved since the preview: never take more LIT, or give fewer shares, than agreed
+    if y > max_y or sp["shares"] < min_shares:
+        raise SwapError("The pool price moved. Please preview again.")
+    if min_shares < sp["shares"] * 95 // 100:
+        raise SwapError("That minimum is too far below what the pool gives now. Preview again.")
+    pk = bytes(address.ergo_tree())[1:]
+    tree = ld_order_tree("deposit", pk, dx=x, shares=min_shares)
+    back = ld_parse_tree(tree)
+    if not back or not back["ours"] or back["kind"] != "deposit" or back["pk"] != pk or back["dx"] != x or back["shares"] != min_shares:
+        raise SwapError("The order could not be prepared. Please try again.")
+    box_value = x + LD_PROVISION_MIN + LD_EXECUTOR_FEE + LD_RETURNED
+
+    def need_erg(toks):
+        n = len(set(toks) - ({LIT_ID} if toks.get(LIT_ID) == y else set()))
+        return box_value + fee + change_need(n)
+
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, LIT_ID, y)
+    ctx, height = chain_context(cfg)
+    order_out = ErgoBoxCandidate(value=box_value, script=ErgoTree.from_bytes(tree), creation_height=height,
+                                 tokens=[Token(TokenId(LIT_ID), y)])
+    out_toks = dict(user_toks)
+    out_toks[LIT_ID] -= y
+    change = user_outputs(address, height, out_toks, user_erg - box_value - fee)
+    unsigned = TxBuilder(BoxSelection(chosen, []), [order_out] + change, height, fee, address).build()
+    built = json.loads(unsigned.json())["outputs"][0]
+    if built["ergoTree"] != tree.hex() or int(built["value"]) != box_value:
+        raise SwapError("The order could not be prepared. Please try again.")
+    order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 0)
+    if ld_simulate_deposit(pool, order_box, x, y, address, ctx, height) != sp["shares"]:
+        raise SwapError("The order could not be prepared. Please try again.")
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    return {"reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"), "tx_id": hexid(unsigned.id),
+            "address": addr_str, "amount_x": str(x), "amount_y": str(y), "shares": str(sp["shares"]),
+            "min_shares": str(min_shares), "miner_fee": str(fee), "executor_fee": str(LD_EXECUTOR_FEE),
+            "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id), "kind": "deposit"}
+
+
+def _ld_provisions(cfg):
+    """Every open provision of the ERG:LIT pool: {owner NFT id: explorer box}."""
+    found, offset = {}, 0
+    while offset < 2000:
+        page = explorer(cfg, "boxes/unspent/byTokenId/%s?limit=100&offset=%d" % (LD_PROV_TOKEN, offset)) or {}
+        items = page.get("items") or []
+        for b in items:
+            try:
+                if b.get("ergoTree") != LD_PROVISION_GUARD_TREE:
+                    continue
+                reg = b["additionalRegisters"]
+                nft = reg["R6"]["renderedValue"]
+                if is_hex64(nft):
+                    b["_shares"] = int(reg["R7"]["renderedValue"])
+                    b["_entry_x"] = int(reg["R4"]["renderedValue"].strip("CBigInt()"))
+                    b["_entry_y"] = int(reg["R5"]["renderedValue"].strip("CBigInt()"))
+                    found[nft] = b
+            except (KeyError, TypeError, ValueError):
+                continue
+        offset += 100
+        if len(items) < 100:
+            break
+    return found
+
+
+def _ld_position(prov, pool, supply, st, vault):
+    sh = prov["_shares"]
+    return {"nft": prov["additionalRegisters"]["R6"]["renderedValue"], "box_id": prov["boxId"], "shares": str(sh),
+            "value_erg": str(sh * pool.rx // supply), "value_lit": str(sh * pool.ry // supply),
+            "share_bps": sh * 10000 // supply, "deposit": str(int(prov["value"])),
+            # fees already moved to the vault: claimable now
+            "claim_erg": str(max(0, sh * (vault["_acc_x"] - prov["_entry_x"]) // LD_ACC_SCALE)),
+            "claim_lit": str(max(0, sh * (vault["_acc_y"] - prov["_entry_y"]) // LD_ACC_SCALE)),
+            # fees earned since the last flush: still in the pool, claimable after the next flush
+            "pending_erg": str(max(0, sh * (st["acc_x"] - max(vault["_acc_x"], prov["_entry_x"])) // LD_ACC_SCALE)),
+            "pending_lit": str(max(0, sh * (st["acc_y"] - max(vault["_acc_y"], prov["_entry_y"])) // LD_ACC_SCALE))}
+
+
+def cmd_ldpositions(req):
+    """The liquidity positions an address owns: the provisions whose owner NFT it holds."""
+    cfg = req["cfg"]
+    _need_v6()
+    address = req_address(req.get("address"))
+    bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+    held = set(t.get("tokenId") for t in bal.get("tokens") or [] if int(t.get("amount", 0)) == 1)
+    pool = ld_pool(cfg)
+    st = _ld_registers(pool.raw)
+    supply = LD_LOCKED_LP - st["liquidity"]
+    vault = ld_vault(cfg)
+    provs = _ld_provisions(cfg)
+    return {"positions": [_ld_position(p, pool, supply, st, vault) for nft, p in provs.items() if nft in held],
+            "providers": len(provs)}
+
+
+def cmd_ldclaim(req):
+    """Collect a position's fees from the vault: the owner spends the box holding the NFT next to
+    the vault and the provision. vault(claim, count 1), provision(claim) -> vault', provision', owner."""
+    from ergo_lib_python.chain import ErgoBox, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction
+    cfg = req["cfg"]
+    _need_v6()
+    nft = req_token_id(req.get("nft"), "position")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    prov = _ld_provisions(cfg).get(nft)
+    if not prov:
+        raise SwapError("This position is no longer open.")
+    vault = ld_vault(cfg)
+    owed_x = prov["_shares"] * (vault["_acc_x"] - prov["_entry_x"]) // LD_ACC_SCALE
+    owed_y = prov["_shares"] * (vault["_acc_y"] - prov["_entry_y"]) // LD_ACC_SCALE
+    if vault["_acc_x"] <= prov["_entry_x"] and vault["_acc_y"] <= prov["_entry_y"]:
+        raise SwapError("There is nothing to claim yet. Fees become claimable after the pool's next flush.")
+    if owed_x < 0 or owed_y < 0 or int(vault["value"]) - owed_x < LD_VAULT_MIN:
+        raise SwapError("The fee vault cannot pay this right now. Please try again later.")
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    try:
+        chosen, user_erg, user_toks = select_inputs(user_boxes, lambda t: fee + change_need(len(t) + 1) - owed_x, nft, 1)
+    except SwapError:
+        raise SwapError("This address does not hold the NFT that owns this position, or lacks ERG for the network fee.")
+    ctx, height = chain_context(cfg)
+    va = vault["assets"]
+    vault_lit = int(va[1]["amount"]) if len(va) > 1 else 0
+    if owed_y > vault_lit:
+        raise SwapError("The fee vault cannot pay this right now. Please try again later.")
+    vreg, preg = vault["additionalRegisters"], prov["additionalRegisters"]
+    out_toks = dict(user_toks)
+    out_toks[LIT_ID] = out_toks.get(LIT_ID, 0) + owed_y
+    outputs = [
+        _box_json(int(vault["value"]) - owed_x, vault["ergoTree"], height,
+                  [(LD_VAULT_NFT, 1)] + ([(va[1]["tokenId"], vault_lit - owed_y)] if len(va) > 1 else []),
+                  {"R4": vreg["R4"]["serializedValue"], "R5": vreg["R5"]["serializedValue"]}),
+        _box_json(int(prov["value"]), prov["ergoTree"], height, [(LD_PROV_TOKEN, 1)],
+                  {"R4": vreg["R4"]["serializedValue"], "R5": vreg["R5"]["serializedValue"],       # entries move up to the vault's
+                   "R6": preg["R6"]["serializedValue"], "R7": preg["R7"]["serializedValue"]}),
+    ] + _user_boxes_json(address, height, out_toks, user_erg + owed_x - fee) + [_box_json(fee, MINER_FEE_TREE, height)]
+    logic = _bytes_const(bytes.fromhex(LD_PROVISION_LOGIC_VALUE))
+    tx_json = {"inputs": [{"boxId": vault["boxId"], "extension": {"0": "0200", "1": "0402"}},       # vault: claim, one provision
+                          {"boxId": prov["boxId"], "extension": {"0": "0200", "64": logic}}]        # provision: claim
+                         + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [], "outputs": outputs}
+    clean = lambda b: {k: v for k, v in b.items() if not k.startswith("_")}     # noqa: E731
+    boxes = [ErgoBox.from_json(clean(vault)), ErgoBox.from_json(clean(prov))] + chosen
+    try:
+        tx = _prove(tx_json, boxes, ctx, (0, 1))            # the vault and the provision both accept
+        reduced = ReducedTransaction.from_unsigned_tx(tx, boxes, [], ctx)
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos claim refused: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("The claim could not be prepared. The vault may have just changed; please try again.")
+    return {"reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"), "tx_id": hexid(tx.id),
+            "address": addr_str, "claim_erg": str(owed_x), "claim_lit": str(owed_y), "miner_fee": str(fee),
+            "watch_box": vault["boxId"], "nft": nft}
+
+
+def ld_simulate_redeem(pool, prov, order_box, address, ctx, height):
+    """The fill of a redeem order as a miner would build it; pool, provision and order must all accept."""
+    from ergo_lib_python.chain import ErgoBox
+    raw = pool.raw
+    try:
+        st = _ld_registers(raw)
+        supply = LD_LOCKED_LP - st["liquidity"]
+        sh = prov["_shares"]
+        out_x, out_y = sh * pool.rx // supply, sh * pool.ry // supply
+        reg, a = raw["additionalRegisters"], raw["assets"]
+        own = bytes(address.ergo_tree()).hex()
+        order_value = int(json.loads(order_box.json())["value"])
+        outputs = [
+            _box_json(int(raw["value"]) - out_x, raw["ergoTree"], height,
+                      [(a[0]["tokenId"], 1), (a[1]["tokenId"], int(a[1]["amount"]) - out_y), (a[2]["tokenId"], int(a[2]["amount"]) + 1)],
+                      {"R4": _long_const(st["liquidity"] + sh), "R5": reg["R5"]["serializedValue"],
+                       "R6": reg["R6"]["serializedValue"], "R7": reg["R7"]["serializedValue"], "R8": reg["R8"]["serializedValue"]}),
+            _box_json(order_value + int(prov["value"]) + out_x - LD_EXECUTOR_FEE, own, height, [(LIT_ID, out_y)]),
+            _box_json(LD_EXECUTOR_FEE - LD_MAX_MINER_FEE, own, height),
+            _box_json(LD_MAX_MINER_FEE, MINER_FEE_TREE, height)]
+        logic = _bytes_const(bytes.fromhex(LD_PROVISION_LOGIC_VALUE))
+        clean = {k: v for k, v in prov.items() if not k.startswith("_")}
+        _prove({"inputs": [{"boxId": raw["boxId"], "extension": {"0": "0202"}},                     # pool: redeem
+                           {"boxId": prov["boxId"], "extension": {"0": "0201", "64": logic}},      # provision: redeem
+                           {"boxId": hexid(order_box.box_id), "extension": {}}],
+                "dataInputs": [], "outputs": outputs},
+               [ErgoBox.from_json(raw), ErgoBox.from_json(clean), order_box], ctx, (0, 1, 2))
+    except SwapError:
+        raise
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos redeem simulation failed: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("This position could not be closed right now. Please try again.")
+    return out_x, out_y
+
+
+def cmd_ldredeem(req):
+    """Place a redeem order: the owner NFT goes into the order, a miner closes the provision and
+    pays its share of both reserves, the 0.6 ERG deposit included. Unclaimed fees do NOT come along."""
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix, Token, TokenId
+    from ergo_lib_python.ergo_tree import ErgoTree
+    from ergo_lib_python.transaction import ReducedTransaction, TxBuilder
+    from ergo_lib_python.wallet import BoxSelection
+    cfg = req["cfg"]
+    _need_v6()
+    nft = req_token_id(req.get("nft"), "position")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    prov = _ld_provisions(cfg).get(nft)
+    if not prov:
+        raise SwapError("This position is no longer open.")
+    pool = ld_pool(cfg)
+    vault = ld_vault(cfg)
+    st = _ld_registers(pool.raw)
+    pos = _ld_position(prov, pool, LD_LOCKED_LP - st["liquidity"], st, vault)
+    # closing forfeits whatever is still claimable, so unless the user insisted, make them claim first
+    if not req.get("force") and (int(pos["claim_erg"]) > 1000000 or int(pos["claim_lit"]) > 0):
+        raise SwapError("This position has unclaimed fees. Claim them first: closing a position leaves them behind for good.")
+    pk = bytes(address.ergo_tree())[1:]
+    tree = ld_order_tree("redeem", pk)
+    back = ld_parse_tree(tree)
+    if not back or not back["ours"] or back["kind"] != "redeem" or back["pk"] != pk:
+        raise SwapError("The order could not be prepared. Please try again.")
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    try:
+        chosen, user_erg, user_toks = select_inputs(user_boxes, lambda t: LD_RETURNED + fee + change_need(len(t)), nft, 1)
+    except SwapError:
+        raise SwapError("This address does not hold the NFT that owns this position, or lacks ERG for the network fee.")
+    ctx, height = chain_context(cfg)
+    order_out = ErgoBoxCandidate(value=LD_RETURNED, script=ErgoTree.from_bytes(tree), creation_height=height,
+                                 tokens=[Token(TokenId(nft), 1)])
+    out_toks = dict(user_toks)
+    out_toks[nft] -= 1
+    change = user_outputs(address, height, out_toks, user_erg - LD_RETURNED - fee)
+    unsigned = TxBuilder(BoxSelection(chosen, []), [order_out] + change, height, fee, address).build()
+    built = json.loads(unsigned.json())["outputs"][0]
+    if built["ergoTree"] != tree.hex() or [x["tokenId"] for x in built["assets"]] != [nft]:
+        raise SwapError("The order could not be prepared. Please try again.")
+    order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 0)
+    out_x, out_y = ld_simulate_redeem(pool, prov, order_box, address, ctx, height)
+    reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
+    return {"reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"), "tx_id": hexid(unsigned.id),
+            "address": addr_str, "nft": nft, "out_erg": str(out_x + int(prov["value"]) - LD_EXECUTOR_FEE + LD_RETURNED),
+            "out_lit": str(out_y), "miner_fee": str(fee), "executor_fee": str(LD_EXECUTOR_FEE),
+            "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id), "kind": "redeem"}
 
 
 def cmd_lithosstats(req):
@@ -3129,7 +3600,8 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "lpquote": cmd_lpquote, "lpbuild": cmd_lpbuild, "lpmap": cmd_lpmap, "lppositions": cmd_lppositions,
             "bridgequote": cmd_bridgequote, "bridgebuild": cmd_bridgebuild,
             "netstats": cmd_netstats, "portfolio": cmd_portfolio,
-            "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
+            "ldlpquote": cmd_ldlpquote, "ldlpbuild": cmd_ldlpbuild, "ldpositions": cmd_ldpositions, "ldclaim": cmd_ldclaim,
+            "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
             "ldstatus": cmd_ldstatus, "lithosstats": cmd_lithosstats, "lithosminer": cmd_lithosminer,
             "szcoins": cmd_szcoins, "szquote": cmd_szquote, "szorder": cmd_szorder, "szstatus": cmd_szstatus}
 

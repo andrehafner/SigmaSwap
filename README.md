@@ -11,7 +11,7 @@ the app prepares a transaction, and your wallet shows it and signs it.
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
 | **SigmaBridge** | Take funds out of Ergo: ERG and tokens to other chains over the Rosen bridge, or ERG sold for another coin through the Swapuz exchange | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 | **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
-| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, and buying or selling LIT on LithosDex | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
+| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, and providing liquidity there | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -57,6 +57,9 @@ app, do not sign it.
 - **LIT orders wait for a Lithos miner.** An order on LithosDex is filled by a Lithos miner, usually within a
   few minutes, at the pool price then and never below your minimum. If the price is out of reach it waits. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
   Placing a LIT order needs Ergo wallet app version 2.5.1 or newer; older versions refuse to sign it.
+- **A LithosDex liquidity position is an NFT.** Whoever holds the LD-NFT owns the position, its fees and its
+  share of the pool. Send it away or burn it and the position is gone. Collect fees before closing: closing
+  leaves uncollected fees behind for good.
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
 
