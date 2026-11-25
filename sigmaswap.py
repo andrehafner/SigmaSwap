@@ -2549,6 +2549,7 @@ class LdPool(object):
                 and self.rx > 0 and self.ry > 0):
             raise SwapError("The LithosDex pool is unavailable right now.")
         self.box_id = box.get("boxId")
+        self.raw = box
 
     def sell_out(self, base):
         """LIT units the pool pays for `base` nanoERG (the order contract's own formula)."""
@@ -2559,6 +2560,95 @@ class LdPool(object):
         """nanoERG the pool pays for `sold` LIT units, before the executor fee."""
         traded = sold - sold * self.fee_y // LD_FEE_DENOM
         return self.rx * traded * self.fee // (self.ry * LD_FEE_DENOM + traded * self.fee)
+
+
+MINER_FEE_TREE = ("1005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a3"
+                  "9a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a57304")
+LD_LOCKED_LP = 0x7FFFFFFFFFFFFFFF
+LD_ACC_SCALE = 10 ** 27
+_LIB_V6 = None
+
+
+def lib_evaluates_v6():
+    """Can the installed ergo-lib evaluate Ergo 6.0 contracts (Lithos's)? 0.29 can, 0.28 cannot."""
+    global _LIB_V6
+    if _LIB_V6 is None:
+        try:
+            from ergo_lib_python.ergo_tree import ErgoTree
+            ErgoTree.from_bytes(bytes.fromhex(LD_SELL_PINNED)).constants()
+            _LIB_V6 = True
+        except Exception:
+            _LIB_V6 = False
+    return _LIB_V6
+
+
+def _coll_long(values):
+    """Coll[Long] as a register holds it: type 0x11, count, zigzag varints."""
+    return (b"\x11" + _vlq(len(values)) + b"".join(_vlq((v << 1) ^ (v >> 63)) for v in values)).hex()
+
+
+def ld_simulate_fill(pool, order_box, kind, amount, address, ctx, height):
+    """Build the transaction a Lithos miner would build to fill `order_box` right now and have
+    BOTH contracts judge it: the pool and the order. Needs lib_evaluates_v6().
+
+    [pool (swap), order] -> [pool', the owner's reward, the executor, miner fee]: the shape of
+    every fill on the chain. Raises SwapError when either contract refuses, which means the
+    order as built could not be filled at today's price. -> what the owner would receive."""
+    from ergo_lib_python.chain import ErgoBox
+    from ergo_lib_python.transaction import UnsignedTransaction
+    from ergo_lib_python.wallet import Wallet
+    raw = pool.raw
+    reg = raw["additionalRegisters"]
+    try:
+        liquidity = int(reg["R4"]["renderedValue"])
+        pend = [int(x) for x in json.loads(reg["R6"]["renderedValue"])]
+        acc_x = int(reg["R7"]["renderedValue"].strip("CBigInt()"))
+        acc_y = int(reg["R8"]["renderedValue"].strip("CBigInt()"))
+        supply = LD_LOCKED_LP - liquidity
+        assets = [dict(tokenId=a["tokenId"], amount=int(a["amount"])) for a in raw["assets"]]
+        order_value = int(json.loads(order_box.json())["value"])
+        own_tree = bytes(address.ergo_tree()).hex()
+        if kind == "sell":                              # ERG into the pool, LIT out
+            out = pool.sell_out(amount)
+            fee_part = pool.fee_x * amount // LD_FEE_DENOM
+            pend[0] += fee_part
+            acc_x += fee_part * LD_ACC_SCALE // supply
+            pool_value = int(raw["value"]) + amount
+            assets[1]["amount"] -= out
+            reward = {"value": order_value - amount - LD_EXECUTOR_FEE, "assets": [{"tokenId": LIT_ID, "amount": out}]}
+            got = out
+        else:                                           # LIT into the pool, ERG out
+            quote = pool.buy_out(amount)
+            fee_part = pool.fee_y * amount // LD_FEE_DENOM
+            pend[1] += fee_part
+            acc_y += fee_part * LD_ACC_SCALE // supply
+            pool_value = int(raw["value"]) - quote
+            assets[1]["amount"] += amount
+            got = quote - LD_EXECUTOR_FEE
+            reward = {"value": order_value + got, "assets": []}
+        registers = {"R4": reg["R4"]["serializedValue"], "R5": reg["R5"]["serializedValue"], "R6": _coll_long(pend),
+                     "R7": _ld_bigint(acc_x).hex(), "R8": _ld_bigint(acc_y).hex()}
+
+        def box(value, tree, assets_=(), regs=None):
+            return {"value": value, "ergoTree": tree, "creationHeight": height, "assets": list(assets_),
+                    "additionalRegisters": regs or {}}
+        tx = UnsignedTransaction.from_json(json.dumps({
+            "inputs": [{"boxId": raw["boxId"], "extension": {"0": "0200"}},        # CTX_OP = 0: swap
+                       {"boxId": hexid(order_box.box_id), "extension": {}}],
+            "dataInputs": [],
+            "outputs": [box(pool_value, raw["ergoTree"], assets, registers),
+                        box(reward["value"], own_tree, reward["assets"]),
+                        box(LD_EXECUTOR_FEE - LD_MAX_MINER_FEE, own_tree),          # any address: the contract does not care
+                        box(LD_MAX_MINER_FEE, MINER_FEE_TREE)]}))
+        boxes = [ErgoBox.from_json(raw), order_box]
+        Wallet([]).sign_tx_input(tx, 0, boxes, [], ctx)       # the pool accepts
+        Wallet([]).sign_tx_input(tx, 1, boxes, [], ctx)       # the order accepts, with no key
+    except SwapError:
+        raise
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos fill simulation failed: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("This order could not be filled at the current price. Please preview it again.")
+    return got
 
 
 def ld_pool(cfg):
@@ -2661,7 +2751,15 @@ def cmd_ldbuild(req):
         raise SwapError("The order could not be prepared. Please try again.")
     reduced = ReducedTransaction.from_unsigned_tx(unsigned, chosen, [], ctx)
     order_box = ErgoBox.from_box_candidate(order_out, unsigned.id, 0)
+    # with a library that can run Lithos's contracts: prove a miner can fill exactly this box now,
+    # and that the fill pays what the preview said. Without one the byte-level check above stands alone.
+    checked = False
+    if lib_evaluates_v6():
+        if ld_simulate_fill(pool, order_box, t["kind"], amount, address, ctx, height) != t["out"]:
+            raise SwapError("The order could not be prepared. Please try again.")
+        checked = True
     return {
+        "checked": checked,
         "reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"),
         "tx_id": hexid(unsigned.id), "address": addr_str, "side": side, "from": t["from"], "to": t["to"],
         "amount": str(amount), "out": str(t["out"]), "min_out": str(min_out), "miner_fee": str(fee),
@@ -2752,13 +2850,26 @@ def cmd_ldcancel(req):
     for t, a in toks.items():
         out_toks[t] = out_toks.get(t, 0) + a
     outs = user_outputs(address, height, out_toks, value + user_erg - fee)
-    inputs = [stand_in] + chosen
-    unsigned = TxBuilder(BoxSelection(inputs, []), outs, height, fee, address).build()
-    data = bytes(ReducedTransaction.from_unsigned_tx(unsigned, inputs, [], ctx))
-    fake, real = bytes(stand_in.box_id), bytes.fromhex(box_id)
-    if data.count(fake) != 1:
-        raise SwapError("The cancellation could not be prepared. Please try again.")
-    data = data.replace(fake, real)
+    checked = False
+    if lib_evaluates_v6():
+        # the library can run the contract: reduce against the real order box, which only succeeds
+        # if the contract really does hand the box to the owner's key from this position
+        inputs = [ErgoBox.from_json(raw)] + chosen
+        unsigned = TxBuilder(BoxSelection(inputs, []), outs, height, fee, address).build()
+        try:
+            data = bytes(ReducedTransaction.from_unsigned_tx(unsigned, inputs, [], ctx))
+        except Exception as e:
+            sys.stderr.write("sigmaswap.py: lithos cancel refused by the contract: %s\n" % str(e)[:300])
+            raise SwapError("The cancellation could not be prepared. Please try again.")
+        checked = True
+    else:
+        inputs = [stand_in] + chosen
+        unsigned = TxBuilder(BoxSelection(inputs, []), outs, height, fee, address).build()
+        data = bytes(ReducedTransaction.from_unsigned_tx(unsigned, inputs, [], ctx))
+        fake, real = bytes(stand_in.box_id), bytes.fromhex(box_id)
+        if data.count(fake) != 1:
+            raise SwapError("The cancellation could not be prepared. Please try again.")
+        data = data.replace(fake, real)
     final = ReducedTransaction.from_bytes(data)       # must still be a well-formed reduced transaction
     spent = json.loads(final.unsigned_tx().json())
     own = bytes(address.ergo_tree()).hex()
@@ -2767,7 +2878,7 @@ def cmd_ldcancel(req):
         raise SwapError("The cancellation could not be prepared. Please try again.")
     return {"reduced_tx": base64.urlsafe_b64encode(data).decode("ascii"), "tx_id": hexid(final.unsigned_tx().id),
             "address": addr_str, "from": order["from"], "amount": order["amount"], "value": str(value),
-            "miner_fee": str(fee)}
+            "miner_fee": str(fee), "checked": checked}
 
 
 def cmd_ldstatus(req):

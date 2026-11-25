@@ -16,7 +16,7 @@ use AppConfig qw(cfg chain);
 
 my $ERG_ID = '0' x 64;
 
-our @EXPORT = qw(note_is_ours get_pools registry watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
+our @EXPORT = qw(wallet_version wallet_at_least note_is_ours get_pools registry watch_add notifications notify_json order_register O N TRUE FALSE enc enc_str out_json die_json success_json fmt_amount cache_dir label child column row card button kv_row new_nonce record_file save_record load_record);
 
 sub O     { my @kv = @_; my @o; while (@kv) { my ($k, $v) = splice(@kv, 0, 2); push @o, $k, $v if defined $v } return bless \@o, 'JObj' }
 
@@ -110,6 +110,27 @@ sub kv_row {    # "Label ........ value"
     my ($k, $v, %o) = @_;
     my $value = ref $v ? $v : label($v, $o{style} || 'BODY1BOLD', color => $o{color}, talign => 'END');
     return child(row([ child(label($k, 'BODY1', color => 'SECONDARY'), weight => N(1)), $value ]), align => 'JUSTIFY');
+}
+
+# ---- which wallet is asking
+# The Ergo wallet app sends its own version with every Mosaik request (header
+# Mosaik-walletAppVersion, e.g. "2.5.1"). The periodic notification check sends it empty,
+# and other Mosaik clients may send anything, so "unknown" is a normal answer.
+
+sub wallet_version {
+    my $v = $ENV{HTTP_MOSAIK_WALLETAPPVERSION};
+    return (defined $v && $v =~ /^(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?/) ? [ $1 + 0, $2 + 0, ($3 // 0) + 0 ] : undef;
+}
+
+# 1 = this wallet is at least major.minor.patch, 0 = it is older, undef = it did not say
+sub wallet_at_least {
+    my @want = @_;
+    my $have = wallet_version() or return undef;
+    for my $i (0 .. 2) {
+        return 1 if $have->[$i] > ($want[$i] // 0);
+        return 0 if $have->[$i] < ($want[$i] // 0);
+    }
+    return 1;
 }
 
 sub new_nonce {

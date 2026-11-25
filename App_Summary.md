@@ -310,21 +310,18 @@
 - **Price alerts are best effort.** They use the pool list from the ErgoDex API, checked once a minute, and reach
   the user only when the wallet next asks for notifications. They are not a stop-loss. Not yet seen in a real wallet.
 - **SigmaStats prices are pool prices**, and the ERG price is its SigUSD pool price, which can differ from exchanges.
-- **LithosDex orders cannot be simulated here.** Lithos's contracts use Ergo 6.0 operations that the transaction
-  library (ergo-lib-python 0.28) cannot parse or evaluate. So, unlike ErgoDex orders, an order's fill is not
-  proven before signing. What stands in for that: the order script is Lithos's published template with constants
-  substituted on the bytes, the construction reproduced two real, filled mainnet orders byte for byte, and the
-  price formula matched those fills exactly. One order from this app has since been placed and filled on mainnet
-  (1 ERG for LIT, signed with wallet 2.5.1, filled by a Lithos miner in the same block, above its minimum).
-- **LithosDex cancel is built without evaluating the contract.** It relies on the contract's refund path (the
-  order at input 0 reduces to the owner's key), read from the source, not on a local run. No cancel from this app
-  has confirmed on-chain yet (the one attempt lost the race to a fill, see below); the first should be of a small order. If it were wrong the transaction would be
-  rejected by the network, not lose funds, but the order would then need the Lithos client to cancel.
-- **LIT trading needs a wallet with Ergo 6.0 support.** An Android wallet build tested by the operator refused the
-  order transaction before signing ("Cannot create ErgoAddress from unparsed ergo tree", validation rule 1011): it
-  could not read the order box's script. The wallet's source moved to AppKit 6.0.1 on 19 Nov 2026; builds from before
-  that (wallet version 2.5.0 and older) cannot place LithosDex orders; the app asks for 2.5.1 or newer. A 2.5.1
-  build signed and placed one successfully. Nothing is sent when the wallet refuses.
+- **LithosDex checks depend on the library version.** Lithos's contracts use Ergo 6.0 operations. With
+  ergo-lib-python 0.29 (the build in `vendor/`) the helper proves, before a wallet signs, that the pool and the order
+  contract both accept a fill of the exact order box at the previewed amount, and it reduces a cancel against the real
+  order box. Four real mainnet fills replay as valid under it and a fill paying the owner one unit less is refused.
+  With 0.28 (PyPI) neither contract can be run: the order script is then only checked byte for byte against Lithos's
+  published template, and a cancel is reduced against a stand-in box (which gives the identical transaction).
+  `ldbuild` and `ldcancel` report which happened as `checked`.
+- **Wallet version gate.** The wallet app sends its version (`Mosaik-walletAppVersion`). SigmaLithos hides the
+  signing features from versions below `LITHOS_MIN_WALLET` (2.5.1) and says why; a client that sends no version is
+  let through with a warning. The gate is a convenience, not a control: the signing link itself cannot see the
+  wallet version, and an old wallet that follows one simply fails to sign. Three orders were placed and filled on
+  mainnet with a 2.5.1 build; a cancel has not confirmed yet (the one attempt lost the race to a fill).
 - **Fills depend on Lithos miners** and on a thin LIT market. The operator's first three orders were each filled
   within about three minutes (two in the block they confirmed in); an order whose minimum is out of reach waits.
   A cancel sent while a fill is already in the mempool is refused by the node as a double spend; that happened once

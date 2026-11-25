@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 5;
+use constant APP_VERSION => 6;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -46,6 +46,20 @@ my $API  = "$BASE/api.pl";
 my $action = $cgi->url_param('action');
 $action = $cgi->param('action') unless defined $action && $action ne '';
 $action = '' unless defined $action;
+
+# Signing anything that touches a Lithos contract needs a wallet whose signing library knows Ergo 6.0:
+# Ergo wallet app 2.5.1 or newer (LITHOS_MIN_WALLET, "major.minor.patch"; empty switches the check off).
+# The wallet says which version it is. An older one gets the read-only screens and is told why; one
+# that does not say is let through with the warning shown.
+my @MIN_WALLET = (cfg('LITHOS_MIN_WALLET', '2.5.1') =~ /^(\d+)\.(\d+)(?:\.(\d+))?\z/) ? ($1, $2, $3 // 0) : ();
+my $WALLET_OK  = @MIN_WALLET ? wallet_at_least(@MIN_WALLET) : 1;           # 1 yes, 0 too old, undef unknown
+my $MIN_TEXT   = @MIN_WALLET ? join('.', @MIN_WALLET) : '';
+my $TOO_OLD    = (defined $WALLET_OK && !$WALLET_OK) ? 1 : 0;
+sub wallet_text { my $v = wallet_version(); return $v ? join('.', @$v) : 'unknown' }
+sub too_old_text {
+    return "This needs Ergo wallet app version $MIN_TEXT or newer. Yours is " . wallet_text()
+         . ', which cannot sign transactions with Lithos\'s contracts. Update the wallet app and open SigmaLithos again.';
+}
 
 my %mosaik = ('' => \&act_app, home => \&act_home, dash => \&act_dash, mine => \&act_mine,
               trade => \&act_trade, quote => \&act_quote, orders => \&act_orders, status => \&act_status);
@@ -188,12 +202,19 @@ sub home_view {
                   'Read-only. The figures are the ones Lithos publishes.', 'Open the dashboard', 'goDash'),
         $choice->('My mining', 'What a mining address earned from Lithos lately: payouts in ERG and LIT, blocks found and what the share proofs cost.',
                   'Read-only, from the address\'s own transactions on the blockchain. It does not connect to your miner.', 'Show my mining', 'goMine', 'SECONDARY'),
-        $choice->('Trade LIT', 'Buy LIT with ERG or sell LIT for ERG on LithosDex, the exchange built into Lithos.',
-                  'You place an order; a Lithos miner fills it at the pool price, never below your minimum. You can cancel it until then. '
-                  . 'Needs Ergo wallet app version 2.5.1 or newer.', 'Trade LIT', 'goTrade', 'SECONDARY'),
+        ($TOO_OLD
+            ? child(card(column([
+                  child(label('Trade LIT', 'HEADLINE2'), align => 'START'),
+                  child(label('Buy LIT with ERG or sell LIT for ERG on LithosDex, the exchange built into Lithos.', 'BODY1'), align => 'START'),
+                  child(label(too_old_text(), 'BODY2BOLD', color => 'PRIMARY'), align => 'START'),
+              ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY')
+            : $choice->('Trade LIT', 'Buy LIT with ERG or sell LIT for ERG on LithosDex, the exchange built into Lithos.',
+                  'You place an order; a Lithos miner fills it at the pool price, never below your minimum. You can cancel it until then.'
+                  . (defined $WALLET_OK ? '' : " Needs Ergo wallet app version $MIN_TEXT or newer."), 'Trade LIT', 'goTrade', 'SECONDARY')),
         label('An independent app, not made by the Lithos project. It cannot set up or control a miner: that needs the Lithos client on your own computer.',
               'BODY2', color => 'SECONDARY', talign => 'CENTER'),
         button('lithosprotocol.org', 'openLithos', style => 'TEXT'),
+        label('Your wallet app reports version ' . wallet_text() . '.', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
     ], id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
@@ -373,9 +394,9 @@ sub trade_view {
                       . 'until the price comes back, or until you cancel it.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
     # LithosDex contracts use Ergo 6.0 operations. A wallet build without 6.0 support cannot read the
     # order box and stops with "Cannot create ErgoAddress from unparsed ergo tree" before signing.
-    push @kids, label('Needs Ergo wallet app version 2.5.1 or newer. If signing stops with an error about an "unparsed ergo tree", '
+    push @kids, label("Needs Ergo wallet app version $MIN_TEXT or newer. If signing stops with an error about an \"unparsed ergo tree\", "
                       . 'your wallet is older and cannot read the contract format LithosDex uses: nothing was sent. Update the wallet and try again.',
-                      'BODY2', color => 'SECONDARY', talign => 'CENTER');
+                      'BODY2', color => 'SECONDARY', talign => 'CENTER') unless $WALLET_OK;
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
@@ -402,9 +423,10 @@ sub act_dash  {
                    O(type => 'BackendRequestAction', url => "$API?action=dash$q", id => 'dashKeep', postValues => 'NONE'));
 }
 sub act_mine  { mosaik_replace(mine_view(good_address(posted_values()->{address}))) }
-sub act_trade { mosaik_replace(trade_view(trade_state(posted_values()))) }
+sub act_trade { return mosaik_dialog(too_old_text()) if $TOO_OLD; mosaik_replace(trade_view(trade_state(posted_values()))) }
 
 sub act_quote {
+    return mosaik_dialog(too_old_text()) if $TOO_OLD;
     my $s = trade_state(posted_values());
     return mosaik_dialog('Enter the amount first.') unless defined $s->{amount};
     my $buy = $s->{side} eq 'buy';
@@ -461,9 +483,9 @@ sub act_quote {
         push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay', onFinished => $ok ? 'status' : 'goTrade');
         push @rows, child(row([
             O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
-            child(label('Your Ergo wallet app must be version 2.5.1 or newer to sign this. Older versions stop with an error.',
+            child(label("Your Ergo wallet app must be version $MIN_TEXT or newer to sign this. Older versions stop with an error.",
                         'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
-        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY');
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY') unless $WALLET_OK;
         push @rows, button($buy ? 'Place order: buy LIT' : 'Place order: sell LIT', 'pay');
     }
     push @rows, button('Refresh', 'preview', style => 'TEXT');
