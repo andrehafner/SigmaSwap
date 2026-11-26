@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 8;
+use constant APP_VERSION => 9;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -48,10 +48,11 @@ $action = $cgi->param('action') unless defined $action && $action ne '';
 $action = '' unless defined $action;
 
 # Signing anything that touches a Lithos contract needs a wallet whose signing library knows Ergo 6.0:
-# Ergo wallet app 2.5.1 or newer (LITHOS_MIN_WALLET, "major.minor.patch"; empty switches the check off).
-# The wallet says which version it is. An older one gets the read-only screens and is told why; one
-# that does not say is let through with the warning shown.
-my @MIN_WALLET = (cfg('LITHOS_MIN_WALLET', '2.5.1') =~ /^(\d+)\.(\d+)(?:\.(\d+))?\z/) ? ($1, $2, $3 // 0) : ();
+# the current 2.5 release of the Ergo wallet app. Everyone is let in and warned about that. A site that
+# wants to lock older wallets out can set LITHOS_MIN_WALLET ("major.minor.patch"); the default is no check,
+# because builds that can and cannot sign have both reported the same version number.
+my $WALLET_NOTE = 'Signing only works with the 2.5 release of the Ergo wallet app from Google Play or the Apple App Store, or the latest 2.5 Android APK from GitHub.';
+my @MIN_WALLET = (cfg('LITHOS_MIN_WALLET', '') =~ /^(\d+)\.(\d+)(?:\.(\d+))?\z/) ? ($1, $2, $3 // 0) : ();
 my $WALLET_OK  = @MIN_WALLET ? wallet_at_least(@MIN_WALLET) : 1;           # 1 yes, 0 too old, undef unknown
 my $MIN_TEXT   = @MIN_WALLET ? join('.', @MIN_WALLET) : '';
 my $TOO_OLD    = (defined $WALLET_OK && !$WALLET_OK) ? 1 : 0;
@@ -222,7 +223,7 @@ sub home_view {
               ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY')
             : $choice->('Trade LIT', 'Buy LIT with ERG or sell LIT for ERG on LithosDex, the exchange built into Lithos.',
                   'You place an order; a Lithos miner fills it at the pool price, never below your minimum. You can cancel it until then.'
-                  . (defined $WALLET_OK ? '' : " Needs Ergo wallet app version $MIN_TEXT or newer."), 'Trade LIT', 'goTrade', 'SECONDARY')),
+                 , 'Trade LIT', 'goTrade', 'SECONDARY')),
         ($TOO_OLD
             ? child(card(column([
                   child(label('Provide liquidity', 'HEADLINE2'), align => 'START'),
@@ -230,7 +231,7 @@ sub home_view {
               ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY')
             : $choice->('Provide liquidity', 'Add ERG and LIT to the LithosDex pool and earn a share of every trade\'s fees. See your positions, collect fees, close a position.',
                   'Your share moves with the price, so you can end up with less than if you had simply held. A position is owned by an NFT in your wallet: '
-                  . 'whoever holds that NFT owns the position.' . (defined $WALLET_OK ? '' : " Needs Ergo wallet app version $MIN_TEXT or newer."),
+                  . 'whoever holds that NFT owns the position.',
                   'Provide liquidity', 'goLiq', 'SECONDARY')),
         ($TOO_OLD
             ? child(card(column([
@@ -239,11 +240,12 @@ sub home_view {
               ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY')
             : $choice->('Lend collateral', 'Lend ERG to the pool so miners are paid the moment a block is found, and earn the difference when that block\'s own reward reaches you.',
                   'Locks about 3 ERG and a few thousand LIT until a miner uses them, and cannot be cancelled once placed. One position per address.'
-                  . (defined $WALLET_OK ? '' : " Needs Ergo wallet app version $MIN_TEXT or newer."),
+                 ,
                   'Lend collateral', 'goLend', 'SECONDARY')),
         label('An independent app, not made by the Lithos project. It cannot set up or control a miner: that needs the Lithos client on your own computer.',
               'BODY2', color => 'SECONDARY', talign => 'CENTER'),
         button('lithosprotocol.org', 'openLithos', style => 'TEXT'),
+        label("Trading, liquidity and lending: $WALLET_NOTE Other builds stop with an error when signing.", 'BODY2BOLD', color => 'PRIMARY', talign => 'CENTER'),
         label('Your wallet app reports version ' . wallet_text() . '.', 'BODY2', color => 'SECONDARY', talign => 'CENTER'),
     ], id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
@@ -424,9 +426,9 @@ sub trade_view {
                       . 'until the price comes back, or until you cancel it.', 'BODY2', color => 'SECONDARY', talign => 'CENTER');
     # LithosDex contracts use Ergo 6.0 operations. A wallet build without 6.0 support cannot read the
     # order box and stops with "Cannot create ErgoAddress from unparsed ergo tree" before signing.
-    push @kids, label("Needs Ergo wallet app version $MIN_TEXT or newer. If signing stops with an error about an \"unparsed ergo tree\", "
-                      . 'your wallet is older and cannot read the contract format LithosDex uses: nothing was sent. Update the wallet and try again.',
-                      'BODY2', color => 'SECONDARY', talign => 'CENTER') unless $WALLET_OK;
+    push @kids, label("$WALLET_NOTE If signing stops with an error about an \"unparsed ergo tree\", "
+                      . 'your wallet is another build and cannot read the contract format LithosDex uses: nothing was sent. Update the wallet and try again.',
+                      'BODY2', color => 'SECONDARY', talign => 'CENTER');
     return column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT');
 }
 
@@ -513,9 +515,9 @@ sub act_quote {
         push @extra, O(type => 'ErgoPayAction', url => $url, id => 'pay', onFinished => $ok ? 'status' : 'goTrade');
         push @rows, child(row([
             O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
-            child(label("Your Ergo wallet app must be version $MIN_TEXT or newer to sign this. Older versions stop with an error.",
+            child(label("$WALLET_NOTE Other builds stop with an error and nothing is sent.",
                         'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
-        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY') unless $WALLET_OK;
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY');
         push @rows, button($buy ? 'Place order: buy LIT' : 'Place order: sell LIT', 'pay');
     }
     push @rows, button('Refresh', 'preview', style => 'TEXT');
@@ -596,6 +598,7 @@ sub liq_view {
         if defined $q->{balance_erg} && defined $q->{balance_lit};
     push @kids, child(card(column([ child(label('Add liquidity', 'BODY1BOLD'), align => 'START'), @form ],
                                   padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY');
+    push @kids, label($WALLET_NOTE, 'BODY2', color => 'SECONDARY', talign => 'CENTER');
     push @kids, child(O(type => 'Box', id => 'liqresult', children => [ button('Preview', 'liqPreview') ]), align => 'JUSTIFY');
     push @kids, child(O(type => 'Box', id => 'liqpos', children => [ $addr ? button('My positions', 'liqPos', style => 'SECONDARY') : () ]), align => 'JUSTIFY');
     push @kids, child(O(type => 'Box', id => 'liqorders', children => [ $addr ? button('My open liquidity orders', 'liqOrders', style => 'TEXT') : () ]), align => 'JUSTIFY');
@@ -721,6 +724,7 @@ sub act_lendq {
     }
     else {
         push @extra, sign_pair('join', 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&k=join&a=$bid&my=$max_permit&addr=$addr", 'goLend');
+        push @rows, note($WALLET_NOTE);
         push @rows, button('Lend: open the position', 'join');
     }
     push @rows, button('Refresh', 'lendPreview', style => 'TEXT');

@@ -334,9 +334,10 @@
   With 0.28 (PyPI) neither contract can be run: the order script is then only checked byte for byte against Lithos's
   published template, and a cancel is reduced against a stand-in box (which gives the identical transaction).
   `ldbuild` and `ldcancel` report which happened as `checked`.
-- **Wallet version gate.** The wallet app sends its version (`Mosaik-walletAppVersion`). SigmaLithos hides the
-  signing features from versions below `LITHOS_MIN_WALLET` (2.5.1) and says why; a client that sends no version is
-  let through with a warning. The gate is a convenience, not a control: the signing link itself cannot see the
+- **Wallet version.** Only the current 2.5 wallet release (Google Play, App Store, or the latest 2.5 GitHub APK) can
+  sign Lithos contracts. SigmaLithos lets everyone in and shows that warning on every signing screen. Optionally
+  `LITHOS_MIN_WALLET` hides the signing features from wallets reporting an older version (`Mosaik-walletAppVersion`);
+  it is off by default. The gate is a convenience, not a control: the signing link itself cannot see the
   wallet version, and an old wallet that follows one simply fails to sign. Three orders were placed and filled on
   mainnet with a 2.5.1 build; a cancel has not confirmed yet (the one attempt lost the race to a fill).
 - **Lithos lending has not been used on-chain from this app.** Joins at several priority fees are accepted by the

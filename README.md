@@ -56,7 +56,7 @@ app, do not sign it.
   identity documents. Problems with an exchange are between you and Swapuz (support@swapuz.com).
 - **LIT orders wait for a Lithos miner.** An order on LithosDex is filled by a Lithos miner, usually within a
   few minutes, at the pool price then and never below your minimum. If the price is out of reach it waits. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
-  Placing a LIT order needs Ergo wallet app version 2.5.1 or newer; older versions refuse to sign it.
+  Signing needs the 2.5 release of the Ergo wallet app from Google Play or the Apple App Store, or the latest 2.5 Android APK from GitHub; other builds refuse to sign and nothing is sent.
 - **A LithosDex liquidity position is an NFT.** Whoever holds the LD-NFT owns the position, its fees and its
   share of the pool. Send it away or burn it and the position is gone. Collect fees before closing: closing
   leaves uncollected fees behind for good.
@@ -65,7 +65,7 @@ app, do not sign it.
   how often Lithos finds blocks; if it stopped finding blocks the position would keep waiting. When it is used
   the LIT returns at once and the block's reward (3 ERG plus fees) is paid to your key, collectable in the app
   about a day later. One position per address: Lithos's rules forfeit a duplicate, so the app refuses one, but
-  it cannot stop you opening a second from the same address elsewhere. Needs wallet app 2.5.1 or newer.
+  it cannot stop you opening a second from the same address elsewhere.
 - **A mint is permanent.** Names, amounts and NFT files cannot be changed afterwards, and files
   stored on IPFS are public and cannot be removed.
 
