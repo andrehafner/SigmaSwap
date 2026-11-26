@@ -74,7 +74,7 @@ sub posted_values {
 
 sub good_address { my ($a) = @_; return (defined $a && !ref $a && $a =~ /^[1-9A-HJ-NP-Za-km-z]{40,60}\z/) ? $a : undef }
 sub ergopay_host { my $h = $BASE; $h =~ s{^https?://}{}; return $h }
-sub fmt_pct      { my $s = sprintf('%.2f', $_[0] / 100); $s =~ s/0+\z//; $s =~ s/\.\z//; return "$s %" }
+sub fmt_pct      { my $s = sprintf('%.2f', $_[0] / 100); $s =~ s/0+\z//; $s =~ s/\.\z//; return "$s%" }
 
 # name + decimals of a token: the swap list's label when it has one, else what the chain says
 sub tinfo {
@@ -348,7 +348,7 @@ sub act_addq {
     my @rows = (
         kv_row("You add", amount_el($q->{x}, $q->{x_in}, $x)),
         kv_row("and", amount_el($q->{y}, $q->{y_in}, $y)),
-        kv_row('Your share of the pool', '+' . ($q->{share_bps} >= 1 ? fmt_pct($q->{share_bps}) : 'less than 0.01 %')),
+        kv_row('Your share of the pool', '+' . ($q->{share_bps} >= 1 ? fmt_pct($q->{share_bps}) : 'less than 0.01%')),
         kv_row('Pool fee you earn a share of', fmt_pct((1000 - $q->{fee_num}) * 10)),
         kv_row('Network fee', fmt_amount($fee, 9) . ' ERG'),
         child(label('You receive LP tokens for your share. Keep them: they are what you hand back to withdraw. '
@@ -411,7 +411,7 @@ sub act_posq {
             next if $min_x->is_zero || $min_y->is_zero;
             push @extra, sign_actions("w${i}_$pct", 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&op=remove&p=$p->{pool}&a="
                                       . $lp->bstr . '&q1=' . $min_x->bstr . '&q2=' . $min_y->bstr . "&addr=$addr");
-            push @buttons, child(button($pct == 100 ? 'All' : "$pct %", "w${i}_$pct", style => 'SECONDARY'), weight => N(1));
+            push @buttons, child(button($pct == 100 ? 'All' : "$pct%", "w${i}_$pct", style => 'SECONDARY'), weight => N(1));
         }
         push @rows, child(label('Withdraw', 'BODY2', color => 'SECONDARY'), align => 'START'),
                     child(row(\@buttons, spacing => 'HALF_DEFAULT'), align => 'JUSTIFY') if @buttons;
