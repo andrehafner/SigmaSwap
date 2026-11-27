@@ -32,7 +32,7 @@ use MosaikKit;
 use constant APP_VERSION => 10;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
-use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
+use constant SLIPPAGE    => (50 => '0.5%', 100 => '1%', 300 => '3%', 1000 => '10%');
 
 $CGI::POST_MAX        = 64 * 1024;
 $CGI::DISABLE_UPLOADS = 1;
@@ -795,7 +795,7 @@ sub act_liqq {
         kv_row('Network fee', erg($fee)),
         note('This places a deposit order. A Lithos miner fills it, usually within minutes, and you receive an NFT named LD-NFT: it IS your '
              . 'position. Whoever holds it can collect the fees and withdraw the liquidity, so do not send it anywhere or burn it. If the '
-             . 'price has moved more than 1 % when the order is filled, it waits; you can cancel it under "My open liquidity orders".'),
+             . 'price has moved more than 1% when the order is filled, it waits; you can cancel it under "My open liquidity orders".'),
     );
     my @extra;
     my $need_erg = Math::BigInt->new("$a")->badd($locked + $fee + 1000000);
