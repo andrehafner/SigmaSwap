@@ -45,7 +45,7 @@ sudo venv/bin/python -I -c 'import ergo_lib_python; print("ok")'      # must pri
 ```
 
 **Optional, recommended if you run SigmaLithos:** install the newer library build in `vendor/` over the one
-just installed. It can evaluate Lithos's contracts, which the PyPI version cannot. "Swap now", "Provide liquidity" and
+just installed. It can evaluate Lithos's contracts, which the PyPI version cannot. "Swap now", "Provide liquidity", "SigmaFi loans" and
 "Lend collateral" only work with it; without it those screens say they are unavailable. Steps, checksum and how it was
 built are in `vendor/README.md`. It is for Python 3.10 only (`venv/bin/python --version`).
 

@@ -3898,6 +3898,595 @@ def cmd_portfolio(req):
 
 SIGUSD_ID = "03faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf04"
 
+# ============================================================== SigmaFi V2 ==
+# Peer-to-peer zero-coupon loans (the "ZC Standard" of github.com/Lithos-Protocol/Sigma-Finance-V2),
+# ERG market only: ERG is lent and repaid, the collateral is tokens. A borrower posts an order holding
+# the collateral; a lender fills it, which mints 3 bond units: 2 stay in the bond box, 1 goes to the
+# lender. The bond is repaid (before maturity) or liquidated (from maturity on, or earlier under the
+# oracle rule) into a vault, and whoever holds the lender's unit claims the vault.
+#
+# The trees are pinned byte for byte from that repository's contracts.tsv at commit adce8ac. If the
+# protocol re-pins its contracts, boxes under the new scripts are simply not seen here.
+
+SF_ORDER_TREE = "1bfa084b050005000e000500040e0480010406010004020400040404060100040c040a0400040204040400040004000402050004040400040204000400050004020580897a04040580897a04000500040205000404050005000502058092f4010580897a04080400050604000400040005020e01300e20319a66e05ae32391584bb6f649e1c91dfb2eead2c496768c53de0a101c1114c50400040004000504040205000580897a05100502050004060406053c04020101040e04800104000100040a0408058092f4010580897ad804d601c5a7d602dad901020eb0a57300d9010441639a8c720401b0db63088c7204027301d90106414d0ed802d6088c720602d6098c72060195938c72080172029a72098c7208027209017201d6037302d604e4c6a7060e959172027303d802d605e4c6a70411d606b1720595ecec8f7206730491720673058fb1a57306d17307d804d607b2a5730800d608e4c672070911d609b2a5730900d60ab2a5730a009594b17208730bd1730cd80bd60bc6a7080ed60ce4c6a7050c4d0ed60db27205730d00d60eb27205730e00d60fc1a7d610b27208730f00d61199720f720ed612b27208731000d6137ea305d614b27208731100d615edededededededededededed95937203b4720173127313eded93b1720c731491b27205731500731690b27205731700b27205731800edededed93b1720c7319938cb2720c731a00017203918cb2720c731b0002731c90b27205731d00731e90b27205731f00732091b27205732100732292b27205732300732491b272057325007326ec93720d732793720d732892720e732990720e99720f732a8f7ea305b27205732b00ededededededed937201c5b2a4732c00937202732d91b1db63087209732e938cb2db63087209732f00017201938cb2db63087209733000027331e6c67209040ee6c67209050e93e4c67209060e7332ededededededededededededed93cbc27207733391b1db630872077334938cb2db63087207733500017201938cb2db63087207733600027337d801d615db6308720793b472157338b17215db6308a7927210733992c1720772119299c17207721172109299c172077210733a93e4c67207040e720193e4c67207050e720493e4c672070611720593e4c67207070c4d0e720c93e4c67207080ee4c6a7070eeded9072127213927212997213733b937e8cc7720701057212ed9172149a7213733c9593720d733d937214b27205733e00d801d615b27205733f00ed92721573409372149a72127215edededed93cbc2720a720492c1720a720e9299c1720a720eb2720573410093db6308720a720c93e4c6720a040e720195e6720bea02d1ed721593cbe4e3010ee4720bd40801d1721595aea4d9010563ed94c57205720193cbc272057204d17342d803d605e4c6a70411d606b17205d607e4e3000495ececec8f7206734391720673448f72077345927207b1a5d17346d802d608b27205734700d609b2a5720700d1edededededed927ea305b27205734800927208734990720899c1a7734a93cbc27209720493e4c67209040e720192c1720999c1a7720893db63087209db6308a7"
+SF_BOND_TREE = "1bf60b390e00040e0480010406010004000404040205000580897a0100040001000580dac4090580897a04c0944005a00b04d00f0478040001000e20cb57a165ecf3965c5f1b5efe152d03b71e4d3b29f86dc06f669024bc23a6223004000400040002010400010004000400040005000200040404020404040204020500050004000100040201000578051e04000400040001000400050405000500050005000500d804d601e4c6a70611d602b17201d603e4c6a70911d604730095ecec8f72027301917202730294b172037303d17304d80bd605b27203730500d606e30904d607b27203730600d608db6308a7d609e4c6a7050ed60ae3000ed60be30304d60cc5a7d60db17208d60eb472087307720dd60faea4d9010f63ed94c5720f720c93cbc2720f720995ec8f7205730891720599c1a77309d1730a95e67206d801d610e4720695ec8f7210730b927210b1a5d1730cd807d6117ea305d612b2a5721000d6138cc7721201d614c1a7d615997214730dd6169a7205730ed617958f7214721672147216d1edededededededededededed8f8cc7a70199a3730fec8f72119972077310927211720791721399a3731190721399a3731293c27212c2a792c172129591721572177215721793db63087212720893e4c67212040ee4c6a7040e93e4c67212050e720993e4c672120611720193e4c67212070c4d0ee4c6a7070c4d0e93e4c67212080ee4c6a7080e93e4c6721209117203d801d610e6720a95ec7210edefe6720be6e30104d801d611e4e3010495ec8f72117313927211b1a5d17314d802d612b2a5721100d613ededed93cbc27212731591b1db63087212731693b2db63087212731700b2720873180093e4c67212040e720c957210ea02d1eded93cbe4720ae4c6a7080e721393e4c6721205027319d40800d801d614e4e3020495ecec8f7214731a927214b1a59372147211d1731bd806d615c17212d616937204b4720c731c731dd617b27201731e00d618b2a5721400d619db63087218d61a95720f7217731fd1ededededededed8f7ea3057207721393e4c6721205027320ed9272157205929972157205b27201732100957216ed93b1db6308721273229299721572057217d801d61bdb63087212eded93b1721b7323938cb2721b732400017204928cb2721b73250002721793cbc27218720993e4c67218040e720ceded93b57219d9011b4d0e948c721b017204b5720ed9011b4d0e948c721b01720492b072197326d9011b414d0ed802d61d8c721b02d61e8c721b0195938c721d0172049a721e8c721d02721e99b0720e7327d9011b414d0ed802d61d8c721b02d61e8c721b0195938c721d0172049a721e8c721d02721e721a92c172189572169999c1a77205721a99c1a7720595e6720bd801d611e4720b95ec8f72117328927211b1a5d17329d804d612b2a5721100d613db63087212d614b17213d615eded9372149a720d732aefae720ed901154d0e938c7215017204938cb27213720d0001720495ed947214720def7215d1732bd804d6167ea305d6177e8cc772120105d618c17212d619c1a7d1edededededed8f72167207720f9272169a7e8cc7a70105732ced927217997216732d9072177216edededededed93c27212c2a793e4c67212040ee4c6a7040e93e4c67212050e720993e4c672120611720193e4c67212070c4d0ee4c6a7070c4d0e93e4c67212080ee4c6a7080e93e4c6721209117203eded927218721993b27213732e00b27208732f00afdb0c0e7208d9011a04d802d61cb27213721a00d61db27208721a00ed938c721c018c721d01928c721c028c721d02ecec72159172187219aedb0c0e7208d9011a04918cb27213721a00028cb27208721a00029593720d7330d17331d803d611b27208733200d6128c721101d6138c721102d1edededed720f937212e4c6a7040e937213733391b0a47334d9011441639a8c721401b0db63088c7214027335d90116414d0ed802d6188c721602d6198c72160195938c72180172129a72198c7218027219721393b0a57336d9011441639a8c721401b0db63088c7214027337d90116414d0ed802d6188c721602d6198c72160195938c72180172129a72198c72180272197338"
+SF_VAULT_TREE = "1bed020d0400040001000580dac4090580897a0580897a04c0944004d00f05000500050005000500d804d601e30904d602db6308a7d603b27202730000d6048c72030195e67201d801d605e4720195ec8f72057301927205b1a5d17302d805d606b2a5720500d6078cc7720601d608c1a7d6099972087303d60a958f7208730472087305d1edededededededed8f8cc7a70199a3730691720799a37307907207a393c27206c2a792c1720695917209720a7209720a93db63087206720293e4c67206040ee4c6a7040e93e4c672060502e4c6a70502efe6c67206060ed1ed91dad901050eb0a47308d9010741639a8c720701b0db63088c7207027309d90109414d0ed802d60b8c720902d60c8c72090195938c720b0172059a720c8c720b02720c0172048c72030293dad901050eb0a5730ad9010741639a8c720701b0db63088c720702730bd90109414d0ed802d60b8c720902d60c8c72090195938c720b0172059a720c8c720b02720c017204730c"
+SF_ORDER_HASH = "802a89eb52be746700099523bbba257e51805ea8fbc4c795a19c45b1d650b4fe"
+SF_BOND_HASH = "319a66e05ae32391584bb6f649e1c91dfb2eead2c496768c53de0a101c1114c5"
+SF_VAULT_HASH = "cb57a165ecf3965c5f1b5efe152d03b71e4d3b29f86dc06f669024bc23a62230"
+# expressions a bond or an order commits to by hash and that the spender supplies: {hash: bytes}
+SF_MATURITY_RULE = "caa76cff5dc32ccc9546daa3025f4a051690d5970528ce9198b63fd3a76ba8fb"
+SF_ORACLE_RULE = "bd55b5c986032ad2ad4abe9eb98b8864584b772b8e44a2fc97c35f6f91d552d2"
+SF_FILL_GUARD = "ec271fdf4ba21aac5fa69cf39ddd4d84b3956b972b555cd4cdecb5ef111577d2"
+SF_EXPR = {
+    SF_MATURITY_RULE: "d802d601e4c6a70911d602e4e3010495ecec94b1720104068f72020400927202b1a5d10100d801d603b2a5720200d1edededed927ea305b2720104040092b27201040000050090b27201040000c1a792c1720399c1a7b2720104000093db63087203db6308a7",
+    SF_ORACLE_RULE: "d804d601e4c6a70611d602b17201d603e4c6a70911d604e4e3010495ecececec8f7202040e91720204800194b1720304068f72040400927204b1a5d10100d804d605b27203040000d606b2a5720400d607db6308a7d6087ea305d1edededed9272050500907205c1a792c1720699c1a7720593db63087206720795927208b272030404000101958f720204120100d804d609b27201040e00d60ab27201041000d60bb5db6501fed9010b63aedb6308720bd9010d4d0eed938c720d010e206a2b821b5727e85beb5e78b4efb9f0250d59cd48481d2ded2c23e91ba1d07c66938c720d020502d60c0e2003faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf0495ececec90720905008f720a050291720a05c09a0c94b1720b04020100d806d60db2720b040000d60e7e8cc7720d0105d60fe4c6720d0405d610b27201040000d611060164d6127e720f06ededededededed92720e050090720e720890997208720e720a91720f050092e4c6720d05040400ec0101930e00720c91721005008f9c9a9c7e99c1a772050672119c72127eb0b472070402b172070500d90113414d0ed802d6158c721302d6168c72130195938c721501720c9a72168c721502721606060227109c9501019c7e72100672119c72127e7210067e720906",
+    SF_FILL_GUARD: "d803d601e4c6a70411d602b2a5040200d603e4c67202091195ec8fb17201041494b172030406d10100d805d604b27201040e00d605b27201041200d606b27201041000d607b5db6501fed9010763aedb63087207d901094d0eed938c7209010e206a2b821b5727e85beb5e78b4efb9f0250d59cd48481d2ded2c23e91ba1d07c66938c7209020502d6080e2003faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf0495ecececec90720405008f720572048f7206050291720605c09a0c94b172070402d10100d809d609b27207040000d60a7e8cc772090105d60be4c672090405d60cb27201040000d60db27203040000d60ec17202d60f060164d6107e720b06d611db63087202d1ededededededededed92720a050090720a7ea30590997ea305720a720691720b050092e4c6720905040400ec0101930e00720891720c050092720d050090720d720e929c9a9c7e99720e720d06720f9c72107eb0b472110402b172110500d90112414d0ed802d6148c721202d6158c72120195938c72140172089a72158c721402721506060227109c9501019c7e720c06720f9c72107e720c067e720506",
+}
+SF_ORACLE_NFT = "6a2b821b5727e85beb5e78b4efb9f0250d59cd48481d2ded2c23e91ba1d07c66"   # ERG/USD oracle pool v2
+SF_EXPIRY_FEE = 5000000          # paid to whoever returns an expired order; comes back with a fill
+SF_COLLATERAL_ERG = 1000000      # nanoERG that rides with the collateral tokens
+SF_FEE_RESERVE = 50000000        # the lender's reserve: pays whoever liquidates, else returns with the repayment
+SF_UNIT_VALUE = 1000000
+SF_BLOCKS_PER_DAY = 720
+SF_YEAR_BLOCKS = 262800
+SF_MAX_SCAN = 500
+SF_ORACLE_RATIO_BPS = 15000
+SF_ORACLE_MAX_AGE = 60
+_sf_pins_ok = None
+
+
+def _sf_pins():
+    """The pinned scripts must be the ones their hashes name, and must name each other."""
+    global _sf_pins_ok
+    if _sf_pins_ok is None:
+        ok = (_b2b(bytes.fromhex(SF_ORDER_TREE)) == SF_ORDER_HASH and _b2b(bytes.fromhex(SF_BOND_TREE)) == SF_BOND_HASH
+              and _b2b(bytes.fromhex(SF_VAULT_TREE)) == SF_VAULT_HASH
+              and SF_BOND_HASH in SF_ORDER_TREE and SF_VAULT_HASH in SF_BOND_TREE
+              and all(_b2b(bytes.fromhex(v)) == k for k, v in SF_EXPR.items()))
+        _sf_pins_ok = bool(ok)
+    if not _sf_pins_ok:
+        raise SwapError("SigmaFi is unavailable: its contract data failed a self-check.")
+    _need_v6()
+
+
+def _int_const(v):
+    return (b"\x04" + _vlq((v << 1) ^ (v >> 63))).hex()
+
+
+def _sf_scan(cfg, tree):
+    out, offset = [], 0
+    while offset < SF_MAX_SCAN:
+        items = (explorer(cfg, "boxes/unspent/byErgoTree/%s?limit=100&offset=%d" % (tree, offset)) or {}).get("items") or []
+        out.extend(b for b in items if b.get("ergoTree") == tree)
+        offset += 100
+        if len(items) < 100:
+            break
+    return out
+
+
+def _sf_box(cfg, box_id, tree):
+    if not is_hex64(box_id):
+        raise SwapError("Invalid request.")
+    b = explorer(cfg, "boxes/%s" % box_id)
+    if not isinstance(b, dict) or b.get("ergoTree") != tree:
+        raise SwapError("That box is not a SigmaFi box this app knows.")
+    if b.get("spentTransactionId"):
+        raise SwapError("This was already used by another transaction. Please refresh.")
+    return b
+
+
+def _sf_height(cfg):
+    return int(((explorer(cfg, "blocks/headers?limit=1") or {}).get("items") or [{}])[0].get("height", 0))
+
+
+def _sf_reg(raw, name):
+    return ((raw.get("additionalRegisters") or {}).get(name) or {})
+
+
+def _sf_longs(raw, name):
+    r = _sf_reg(raw, name)
+    if r.get("sigmaType") != "Coll[SLong]":
+        return None
+    try:
+        v = json.loads(r.get("renderedValue") or "")
+        return [int(x) for x in v] if isinstance(v, list) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _sf_hash(raw, name):
+    r = _sf_reg(raw, name)
+    v = r.get("renderedValue")
+    return v if r.get("sigmaType") == "Coll[SByte]" and is_hex64(v) else None
+
+
+def _sf_assets(raw, skip=0):
+    out = []
+    for a in (raw.get("assets") or [])[skip:]:
+        m = _asset({"id": a["tokenId"], "ticker": a.get("name"), "decimals": a.get("decimals")})
+        out.append({"id": a["tokenId"], "amount": str(int(a["amount"])), "name": m["ticker"], "decimals": m["decimals"]})
+    return out
+
+
+def _sf_oracle(cfg):
+    items = (explorer(cfg, "boxes/unspent/byTokenId/%s?limit=2" % SF_ORACLE_NFT) or {}).get("items") or []
+    if len(items) != 1:
+        return None
+    try:
+        price = int(_sf_reg(items[0], "R4")["renderedValue"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return {"raw": items[0], "price": price, "created": int(items[0].get("creationHeight", 0))} if price > 0 else None
+
+
+def _sf_cover_bps(terms, erg, assets, oracle):
+    """Collateral / repayment in basis points, as the oracle rule measures it (SigUSD at $1, other tokens at 0)."""
+    if not oracle or terms[0] <= 0:
+        return None
+    usd = sum(int(a["amount"]) for a in assets if a["id"] == SIGUSD_ID)
+    return (100 * erg + oracle["price"] * usd) * 10000 // (100 * terms[0])
+
+
+def _sf_terms(r4, r_rule, r_guard):
+    """What the 7+ borrower values and the rule hashes mean, or why this app will not touch them."""
+    if not r4 or not (7 <= len(r4) <= 64) or not r_rule:
+        return None
+    t = {"repayment": r4[0], "principal": r4[1], "mode": r4[6], "term": r4[3], "expiry": r4[4], "expiry_fee": r4[5]}
+    if r_rule == SF_MATURITY_RULE:
+        t["rule"] = "maturity"
+    elif r_rule == SF_ORACLE_RULE and len(r4) >= 9 and r4[7] > 0 and 1 <= r4[8] <= 100000:
+        t["rule"], t["ratio_bps"], t["max_age"] = "oracle", r4[7], r4[8]
+    else:
+        t["rule"] = "other"
+    if r_guard is None:
+        t["guard"] = "none"
+    elif r_guard == SF_FILL_GUARD and len(r4) >= 10 and t["rule"] == "oracle" and r4[9] >= r4[7]:
+        t["guard"], t["fill_bps"] = "oracle", r4[9]
+    else:
+        t["guard"] = "other"
+    t["sound"] = bool(r4[0] > 0 and r4[1] > 0 and r4[2] <= r4[0] and r4[2] > 0 and r4[6] in (0, 1) and r4[5] >= 2000000
+                      and r4[0] >= r4[1] and (r4[6] == 0 or r4[3] >= 30))
+    return t
+
+
+def _sf_order_view(raw, height, oracle):
+    r4 = _sf_longs(raw, "R4")
+    t = _sf_terms(r4, _sf_hash(raw, "R7"), _sf_hash(raw, "R8") if _sf_reg(raw, "R8") else None)
+    borrower = _sf_hash(raw, "R6")
+    if not t or not borrower or _sf_reg(raw, "R5").get("serializedValue") != "0c4d0e00":
+        return None
+    erg = int(raw["value"]) - t["expiry_fee"]
+    assets = _sf_assets(raw)
+    blocks = t["term"] if t["mode"] == 1 else t["term"] - height
+    v = dict(t, box=raw["boxId"], borrower=borrower, collateral_erg=str(erg), collateral=assets, blocks=blocks,
+             blocks_to_expiry=t["expiry"] - height)
+    cover = _sf_cover_bps(r4, erg, assets, oracle) if t["rule"] == "oracle" else None
+    if cover is not None:
+        v["cover_bps"] = cover
+    v["fillable"] = bool(t["sound"] and t["rule"] != "other" and t["guard"] != "other" and erg >= 1000000
+                         and t["expiry"] - height > 3 and blocks > 30
+                         and (t["guard"] != "oracle" or (cover is not None and cover >= t["fill_bps"]
+                                                         and height - oracle["created"] <= t["max_age"] - 3)))
+    for k in ("repayment", "principal", "expiry_fee"):
+        v[k] = str(v[k])
+    return v
+
+
+def _sf_bond_view(raw, height, oracle):
+    r6, r9 = _sf_longs(raw, "R6"), _sf_longs(raw, "R9")
+    assets_all = raw.get("assets") or []
+    asset_id = _sf_hash(raw, "R4")
+    t = _sf_terms(r6, _sf_hash(raw, "R8"), None)
+    if not t or not r9 or len(r9) != 3 or not asset_id or not assets_all or assets_all[0]["tokenId"] != asset_id \
+            or int(assets_all[0]["amount"]) != 2 or not _sf_hash(raw, "R5"):
+        return None
+    reserve, start, maturity = r9
+    if reserve < 0 or reserve > int(raw["value"]) - 1000000:
+        return None
+    erg = int(raw["value"]) - reserve
+    assets = _sf_assets(raw, 1)
+    v = dict(t, box=raw["boxId"], asset=asset_id, borrower=_sf_hash(raw, "R5"), reserve=str(reserve), start=start, maturity=maturity,
+             blocks=maturity - height, collateral_erg=str(erg), collateral=assets)
+    cover = _sf_cover_bps(r6, erg, assets, oracle) if t["rule"] == "oracle" else None
+    if cover is not None:
+        v["cover_bps"] = cover
+    v["under_ratio"] = bool(cover is not None and cover < t["ratio_bps"] and oracle and height - oracle["created"] <= t["max_age"] - 2)
+    v["state"] = "due" if height + 1 >= maturity else "at_risk" if v["under_ratio"] else "live"
+    for k in ("repayment", "principal", "expiry_fee"):
+        v[k] = str(v[k])
+    return v
+
+
+def _sf_me(address):
+    tree = bytes(address.ergo_tree())
+    return tree.hex(), _b2b(tree)
+
+
+def _sf_script(cfg, raw, want_hash):
+    """The ErgoTree behind a script hash a box names: it is an input or output of the box's creating transaction."""
+    tx = explorer(cfg, "transactions/%s" % raw.get("transactionId")) or {}
+    for b in (tx.get("inputs") or []) + (tx.get("outputs") or []):
+        t = b.get("ergoTree")
+        try:
+            if isinstance(t, str) and len(t) <= 8192 and _b2b(bytes.fromhex(t)) == want_hash:
+                return t
+        except ValueError:
+            continue
+    raise SwapError("The borrower's script could not be found on chain, so this app cannot pay them. It is not offered here.")
+
+
+def cmd_sfmarket(req):
+    """Open loan requests on the ERG market, most recent first."""
+    cfg = req["cfg"]
+    _sf_pins()
+    height, oracle = _sf_height(cfg), _sf_oracle(cfg)
+    me = _sf_me(req_address(req["address"]))[1] if req.get("address") else None
+    orders, skipped = [], 0
+    for raw in sorted(_sf_scan(cfg, SF_ORDER_TREE), key=lambda b: -int(b.get("settlementHeight") or 0)):
+        v = _sf_order_view(raw, height, oracle)
+        if not v or not v["fillable"]:
+            skipped += 1
+            continue
+        v["mine"] = bool(me and v["borrower"] == me)
+        orders.append(v)
+    res = {"height": height, "orders": orders[:40], "skipped": skipped, "fee_reserve": str(SF_FEE_RESERVE)}
+    if oracle:
+        res["oracle_price"] = str(oracle["price"])
+    return res
+
+
+def cmd_sforder(req):
+    cfg = req["cfg"]
+    _sf_pins()
+    height, oracle = _sf_height(cfg), _sf_oracle(cfg)
+    v = _sf_order_view(_sf_box(cfg, req.get("box"), SF_ORDER_TREE), height, oracle)
+    if not v:
+        raise SwapError("This order has terms this app does not handle.")
+    res = {"height": height, "order": v, "fee_reserve": str(SF_FEE_RESERVE)}
+    if req.get("address"):
+        address = req_address(req["address"])
+        v["mine"] = v["borrower"] == _sf_me(address)[1]
+        bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+        res["balance_erg"] = str(int(bal.get("nanoErgs", 0)))
+    return res
+
+
+def cmd_sfmine(req):
+    """Everything on SigmaFi that belongs to one address: its requests, its debts, the loans it funded."""
+    cfg = req["cfg"]
+    _sf_pins()
+    address = req_address(req.get("address"))
+    me = _sf_me(address)[1]
+    height, oracle = _sf_height(cfg), _sf_oracle(cfg)
+    bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
+    held = set(t.get("tokenId") for t in (bal.get("tokens") or []) if int(t.get("amount", 0)) >= 1)
+    orders = [v for v in (_sf_order_view(b, height, oracle) for b in _sf_scan(cfg, SF_ORDER_TREE)) if v and v["borrower"] == me]
+    debts, lent = [], []
+    for raw in _sf_scan(cfg, SF_BOND_TREE):
+        v = _sf_bond_view(raw, height, oracle)
+        if not v:
+            continue
+        if v["borrower"] == me:
+            debts.append(v)
+        if v["asset"] in held:
+            lent.append(v)
+    claims = []
+    for raw in _sf_scan(cfg, SF_VAULT_TREE):
+        a = raw.get("assets") or []
+        if not a or int(a[0]["amount"]) != 2 or a[0]["tokenId"] not in held:
+            continue
+        flag = _sf_reg(raw, "R5").get("serializedValue")
+        claims.append({"box": raw["boxId"], "asset": a[0]["tokenId"], "erg": str(int(raw["value"])), "tokens": _sf_assets(raw, 1),
+                       "how": "repaid" if flag == "0200" else "liquidated" if flag == "0201" else "settled"})
+    return {"height": height, "orders": orders, "debts": debts, "lent": lent, "claims": claims,
+            "balance_erg": str(int(bal.get("nanoErgs", 0)))}
+
+
+def _sf_amount_text(nano):
+    s = "%d.%09d" % (nano // 10 ** 9, nano % 10 ** 9)
+    return s.rstrip("0").rstrip(".")
+
+
+def _sf_unit_meta(order_id, t, start, maturity):
+    """EIP-4 name and description of the lender's unit, as the protocol's off-chain profile (zcs1) writes them."""
+    d = '{"zcs":1,"type":"bond unit","market":"ERG","principal":%s,"repayment":%s,"start":%d,"maturity":%d,' % (
+        _sf_amount_text(int(t["principal"])), _sf_amount_text(int(t["repayment"])), start, maturity)
+    if t["rule"] == "oracle":
+        d += '"rule":"oracle","ratio":%s,' % (("%d.%02d" % divmod(t["ratio_bps"], 100)).rstrip("0").rstrip("."))
+    else:
+        d += '"rule":"maturity",'
+    d += '"note":"Verify on chain."}'
+    return ("ZCS-Bond-Unit-" + order_id[:6]).encode("ascii"), d.encode("ascii")
+
+
+def _sf_fill_json(raw, view, borrower_tree, lender_tree, chosen, change_boxes, height, oracle, fee):
+    """order + the lender's boxes -> the lender's unit, the bond, the principal to the borrower, change, fee."""
+    oid = raw["boxId"]
+    reg = raw["additionalRegisters"]
+    start = height
+    maturity = view["term"] if view["mode"] == 0 else start + view["term"]
+    name, desc = _sf_unit_meta(oid, view, start, maturity)
+    ext = {"1": _bytes_const(bytes.fromhex(SF_EXPR[SF_FILL_GUARD]))} if view["guard"] == "oracle" else {}
+    outputs = [
+        _box_json(SF_UNIT_VALUE, lender_tree, height, [(oid, 1)],
+                  {"R4": _bytes_const(name), "R5": _bytes_const(desc), "R6": "0e0130"}),
+        _box_json(int(view["collateral_erg"]) + SF_FEE_RESERVE, SF_BOND_TREE, start,
+                  [(oid, 2)] + [(a["tokenId"], int(a["amount"])) for a in raw.get("assets") or []],
+                  {"R4": _bytes_const(bytes.fromhex(oid)), "R5": reg["R6"]["serializedValue"], "R6": reg["R4"]["serializedValue"],
+                   "R7": reg["R5"]["serializedValue"], "R8": reg["R7"]["serializedValue"],
+                   "R9": _coll_long([SF_FEE_RESERVE, start, maturity])}),
+        _box_json(int(view["principal"]) + int(view["expiry_fee"]), borrower_tree, height, [], {"R4": _bytes_const(bytes.fromhex(oid))}),
+    ] + change_boxes + [_box_json(fee, MINER_FEE_TREE, height)]
+    return {"inputs": [{"boxId": oid, "extension": ext}] + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+            "dataInputs": [{"boxId": oracle["raw"]["boxId"]}] if view["guard"] == "oracle" else [], "outputs": outputs}, maturity
+
+
+def _sf_finish(tx_json, boxes, data, ctx, prove, what):
+    from ergo_lib_python.transaction import ReducedTransaction, UnsignedTransaction
+    from ergo_lib_python.wallet import Wallet
+    try:
+        tx = UnsignedTransaction.from_json(json.dumps(tx_json))
+        for i in prove:
+            Wallet([]).sign_tx_input(tx, i, boxes, data, ctx)
+        reduced = ReducedTransaction.from_unsigned_tx(tx, boxes, data, ctx)
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: sigmafi %s refused: %s: %s\n" % (what, type(e).__name__, str(e)[:300]))
+        if "Could not find context extension variable" in str(e):
+            # a library build that insists on a rule expression even where the contract does not read one
+            raise SwapError("This server's transaction library is too old for this SigmaFi step. Its operator needs to "
+                            "install the build in vendor/ (see vendor/README.md).")
+        raise SwapError("This could not be prepared: the SigmaFi contract would not accept it right now. Please refresh and try again.")
+    return tx, base64.urlsafe_b64encode(bytes(reduced)).decode("ascii")
+
+
+def cmd_sffill(req):
+    """Lend: fill a borrower's order."""
+    from ergo_lib_python.chain import ErgoBox, NetworkPrefix
+    cfg = req["cfg"]
+    _sf_pins()
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    my_tree, me = _sf_me(address)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_ORDER_TREE)
+    ctx, height = chain_context(cfg)
+    oracle = _sf_oracle(cfg)
+    v = _sf_order_view(raw, height, oracle)
+    if not v or not v["fillable"]:
+        raise SwapError("This order cannot be filled right now: it expired, its terms are not ones this app handles, or its collateral is too thin.")
+    if v["borrower"] == me:
+        raise SwapError("This is your own order. Use another address to lend, or cancel it under My loans.")
+    # the terms arrive in the signing link: never fund an order whose terms differ from the ones previewed
+    if str(req.get("principal")) != v["principal"] or str(req.get("repayment")) != v["repayment"]:
+        raise SwapError("The order changed since the preview. Please look at it again.")
+    borrower_tree = _sf_script(cfg, raw, v["borrower"])
+    lend = SF_UNIT_VALUE + SF_FEE_RESERVE + int(v["principal"])
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: lend + fee + change_need(len(toks)), None, 0)
+    change = _user_boxes_json(address, height, user_toks, user_erg - lend - fee)
+    tx_json, maturity = _sf_fill_json(raw, v, borrower_tree, my_tree, chosen, change, height, oracle, fee)
+    data = [ErgoBox.from_json(oracle["raw"])] if v["guard"] == "oracle" else []
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, data, ctx, (0,), "fill")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "principal": v["principal"], "repayment": v["repayment"],
+            "reserve": str(SF_FEE_RESERVE), "maturity": maturity, "blocks": maturity - height, "asset": raw["boxId"],
+            "miner_fee": str(fee), "watch_box": raw["boxId"]}
+
+
+def cmd_sfcreate(req):
+    """Borrow: post an order holding the collateral. Nothing is lent until a lender fills it."""
+    from ergo_lib_python.chain import ErgoBox, NetworkPrefix
+    from ergo_lib_python.transaction import TxId
+    cfg = req["cfg"]
+    _sf_pins()
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    my_tree, me = _sf_me(address)
+    fee = miner_fee(cfg)
+    token = req.get("token")
+    if not is_hex64(token):
+        raise SwapError("Choose the token to put up as collateral.")
+    amount = req_amount(req.get("amount"), "collateral amount")
+    principal = req_amount(req.get("principal"), "amount to borrow")
+    repayment = req_amount(req.get("repayment"), "repayment")
+    days = int(req.get("days") or 0)
+    open_days = int(req.get("open_days") or 0)
+    if not (1 <= days <= 730) or not (1 <= open_days <= 60):
+        raise SwapError("Choose how long the loan runs and how long the request stays open.")
+    if principal < 10000000:
+        raise SwapError("The least you can borrow here is 0.01 ERG.")
+    if repayment < principal or repayment > principal * 3:
+        raise SwapError("The repayment must be at least what you borrow, and at most three times it.")
+    ctx, height = chain_context(cfg)
+    r4 = [repayment, principal, repayment, days * SF_BLOCKS_PER_DAY, height + open_days * SF_BLOCKS_PER_DAY, SF_EXPIRY_FEE, 1]
+    regs = {"R5": "0c4d0e00", "R6": _bytes_const(bytes.fromhex(me))}
+    oracle = None
+    if token == SIGUSD_ID:      # the oracle rule: liquidated early if the SigUSD falls under 150 % of the repayment
+        oracle = _sf_oracle(cfg)
+        r4 += [SF_ORACLE_RATIO_BPS, SF_ORACLE_MAX_AGE, SF_ORACLE_RATIO_BPS]
+        cover = _sf_cover_bps(r4, SF_COLLATERAL_ERG, [{"id": token, "amount": amount}], oracle)
+        if cover is None:
+            raise SwapError("The ERG/USD oracle is unavailable right now. Please try again.")
+        if cover < SF_ORACLE_RATIO_BPS * 105 // 100:
+            raise SwapError("Not enough collateral: SigUSD collateral must be worth at least 157.5 %% of the repayment "
+                            "(it is %d %% now), or no lender could fill the request." % (cover // 100))
+        regs["R7"], regs["R8"] = _bytes_const(bytes.fromhex(SF_ORACLE_RULE)), _bytes_const(bytes.fromhex(SF_FILL_GUARD))
+    else:
+        regs["R7"] = _bytes_const(bytes.fromhex(SF_MATURITY_RULE))
+    regs["R4"] = _coll_long(r4)
+    value = SF_COLLATERAL_ERG + SF_EXPIRY_FEE
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+
+    def need_erg(toks):
+        n = len(set(toks) - ({token} if toks.get(token) == amount else set()))
+        return value + fee + change_need(n)
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, token, amount)
+    out_toks = dict(user_toks)
+    out_toks[token] -= amount
+    tx_json = {"inputs": [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen], "dataInputs": [],
+               "outputs": [_box_json(value, SF_ORDER_TREE, height, [(token, amount)], regs)]
+                          + _user_boxes_json(address, height, out_toks, user_erg - value - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, chosen, [], ctx, (), "order")
+    # prove the request can actually be filled: build a lender's fill of exactly this box and ask the order contract
+    made = json.loads(tx.json())["outputs"][0]
+    order_raw = dict(made, boxId="", transactionId=hexid(tx.id), index=0,
+                     additionalRegisters={k: {"serializedValue": v} for k, v in regs.items()})
+    try:
+        from ergo_lib_python.chain import ErgoBoxCandidate, Token, TokenId
+        from ergo_lib_python.ergo_tree import ErgoTree
+        order_box = tx.outputs[0]
+        order_raw["boxId"] = hexid(order_box.box_id)
+        if bytes(order_box.ergo_tree).hex() != SF_ORDER_TREE or order_box.value != value:
+            raise ValueError("order box differs")
+        funder = ErgoBox.from_box_candidate(
+            ErgoBoxCandidate(value=principal + SF_FEE_RESERVE + SF_UNIT_VALUE + fee + 1000000,
+                             script=ErgoTree.from_bytes(bytes.fromhex(MINER_FEE_TREE)), creation_height=height), tx.id, 9)
+        view = dict(_sf_terms(r4, _b2b(bytes.fromhex(SF_EXPR[SF_ORACLE_RULE if oracle else SF_MATURITY_RULE])),
+                              SF_FILL_GUARD if oracle else None),
+                    collateral_erg=str(SF_COLLATERAL_ERG), principal=str(principal), repayment=str(repayment), expiry_fee=str(SF_EXPIRY_FEE))
+        fill, _m = _sf_fill_json(order_raw, view, my_tree, MINER_FEE_TREE, [funder],
+                                 [_box_json(1000000, MINER_FEE_TREE, height)], height, oracle, fee)
+        _sf_finish(fill, [order_box, funder], [ErgoBox.from_json(oracle["raw"])] if oracle else [], ctx, (0,), "order self-test")
+    except SwapError:
+        raise SwapError("The request could not be prepared. Please try again.")
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: sigmafi order self-test failed: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("The request could not be prepared. Please try again.")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "principal": str(principal), "repayment": str(repayment),
+            "amount": str(amount), "token": token, "days": days, "open_days": open_days, "rule": "oracle" if oracle else "maturity",
+            "order_box": order_raw["boxId"], "miner_fee": str(fee), "watch_box": hexid(chosen[0].box_id)}
+
+
+def _sf_own(cfg, req):
+    from ergo_lib_python.chain import NetworkPrefix
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    boxes = fetch_user_boxes(cfg, addr_str)
+    if not boxes:
+        raise SwapError("No funds found on this address.")
+    return address, addr_str, boxes
+
+
+def cmd_sfcancel(req):
+    """The borrower takes an unfilled order back: the order plus any box of theirs."""
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_ORDER_TREE)
+    if _sf_hash(raw, "R6") != _sf_me(address)[1]:
+        raise SwapError("This order does not belong to this address.")
+    ctx, height = chain_context(cfg)
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: fee + 1000000, None, 0)
+    toks = dict(user_toks)
+    for a in raw.get("assets") or []:
+        toks[a["tokenId"]] = toks.get(a["tokenId"], 0) + int(a["amount"])
+    tx_json = {"inputs": [{"boxId": raw["boxId"], "extension": {}}] + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [],
+               "outputs": _user_boxes_json(address, height, toks, user_erg + int(raw["value"]) - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, [], ctx, (0,), "cancel")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "miner_fee": str(fee), "watch_box": raw["boxId"],
+            "collateral": _sf_assets(raw)}
+
+
+def cmd_sfrepay(req):
+    """The borrower repays before maturity: the repayment goes to the vault, the collateral comes back."""
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    my_tree, me = _sf_me(address)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_BOND_TREE)
+    ctx, height = chain_context(cfg)
+    v = _sf_bond_view(raw, height, None)
+    if not v or v["borrower"] != me:
+        raise SwapError("This loan does not belong to this address.")
+    if v["maturity"] - height < 3:
+        raise SwapError("It is too late to repay: the loan is at its maturity. The lender can now take the collateral.")
+    repayment, reserve = int(v["repayment"]), int(v["reserve"])
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: repayment + fee + change_need(len(toks)), None, 0)
+    bid = raw["boxId"]
+    tag = _bytes_const(bytes.fromhex(bid))
+    tx_json = {"inputs": [{"boxId": bid, "extension": {"1": _int_const(0), "2": _int_const(1)}}]
+                         + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [],
+               "outputs": [_box_json(repayment + reserve, SF_VAULT_TREE, height, [(v["asset"], 2)], {"R4": tag, "R5": "0200"}),
+                           _box_json(int(raw["value"]) - reserve, my_tree, height,
+                                     [(a["tokenId"], int(a["amount"])) for a in (raw.get("assets") or [])[1:]], {"R4": tag})]
+                          + _user_boxes_json(address, height, user_toks, user_erg - repayment - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, [], ctx, (0,), "repay")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "repayment": str(repayment), "collateral": v["collateral"],
+            "collateral_erg": v["collateral_erg"], "miner_fee": str(fee), "watch_box": bid}
+
+
+def cmd_sfliquidate(req):
+    """Anyone: move a bond that is due (or under its oracle ratio) into its vault, for the lender's fee reserve."""
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_BOND_TREE)
+    ctx, height = chain_context(cfg)
+    oracle = _sf_oracle(cfg)
+    v = _sf_bond_view(raw, height, oracle)
+    if not v or v["rule"] == "other":
+        raise SwapError("This loan has a liquidation rule this app does not handle.")
+    early = v["state"] == "at_risk"
+    if v["state"] == "live":
+        raise SwapError("This loan cannot be liquidated yet.")
+    reserve = int(v["reserve"])
+    rule = SF_ORACLE_RULE if v["rule"] == "oracle" else SF_MATURITY_RULE
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: max(0, fee - reserve) + change_need(len(toks)), None, 0)
+    bid = raw["boxId"]
+    tx_json = {"inputs": [{"boxId": bid, "extension": {"0": _bytes_const(bytes.fromhex(SF_EXPR[rule])), "1": _int_const(0)}}]
+                         + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [{"boxId": oracle["raw"]["boxId"]}] if early else [],
+               "outputs": [_box_json(int(raw["value"]) - reserve, SF_VAULT_TREE, height,
+                                     [(a["tokenId"], int(a["amount"])) for a in raw.get("assets") or []],
+                                     {"R4": _bytes_const(bytes.fromhex(bid)), "R5": "0201"})]
+                          + _user_boxes_json(address, height, user_toks, user_erg + reserve - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, [ErgoBox.from_json(oracle["raw"])] if early else [], ctx, (0,), "liquidate")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "reward": str(reserve - fee), "asset": v["asset"],
+            "collateral": v["collateral"], "collateral_erg": v["collateral_erg"], "miner_fee": str(fee), "watch_box": bid}
+
+
+def cmd_sfclaim(req):
+    """The holder of the lender's unit empties the vault: all 3 units are burned."""
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_VAULT_TREE)
+    assets = raw.get("assets") or []
+    if not assets or int(assets[0]["amount"]) != 2:
+        raise SwapError("This vault is not one this app can claim.")
+    asset = assets[0]["tokenId"]
+    ctx, height = chain_context(cfg)
+    if not any(hexid(t.token_id) == asset for b in user_boxes for t in b.tokens):
+        raise SwapError("This address does not hold the bond token of that loan, so it cannot collect it.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: fee + change_need(len(toks) + len(assets)), asset, 1)
+    toks = dict(user_toks)
+    toks[asset] -= 1
+    if toks[asset] != 0:
+        raise SwapError("This address holds more than one unit of that bond, which a genuine bond never has.")
+    for a in assets[1:]:
+        toks[a["tokenId"]] = toks.get(a["tokenId"], 0) + int(a["amount"])
+    tx_json = {"inputs": [{"boxId": raw["boxId"], "extension": {}}] + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [],
+               "outputs": _user_boxes_json(address, height, toks, user_erg + int(raw["value"]) - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, [], ctx, (0,), "claim")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "erg": str(int(raw["value"])), "tokens": _sf_assets(raw, 1),
+            "miner_fee": str(fee), "watch_box": raw["boxId"]}
+
+
 
 def alert_prices(pools):
     """{asset id: price as a 1e-9 fixed-point int}. For a token: ERG per 1 token, from its
@@ -3983,7 +4572,8 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "netstats": cmd_netstats, "portfolio": cmd_portfolio,
             "lendinfo": cmd_lendinfo, "lendjoin": cmd_lendjoin, "lendclaim": cmd_lendclaim,
             "ldlpquote": cmd_ldlpquote, "ldlpbuild": cmd_ldlpbuild, "ldpositions": cmd_ldpositions, "ldclaim": cmd_ldclaim,
-            "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldswap": cmd_ldswap, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
+            "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "sfmarket": cmd_sfmarket, "sforder": cmd_sforder, "sfmine": cmd_sfmine, "sffill": cmd_sffill,
+            "sfcreate": cmd_sfcreate, "sfcancel": cmd_sfcancel, "sfrepay": cmd_sfrepay, "sfliquidate": cmd_sfliquidate, "sfclaim": cmd_sfclaim, "ldswap": cmd_ldswap, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
             "ldstatus": cmd_ldstatus, "lithosstats": cmd_lithosstats, "lithosminer": cmd_lithosminer,
             "szcoins": cmd_szcoins, "szquote": cmd_szquote, "szorder": cmd_szorder, "szstatus": cmd_szstatus}
 

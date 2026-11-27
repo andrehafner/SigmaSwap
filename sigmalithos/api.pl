@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 10;
+use constant APP_VERSION => 11;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
@@ -65,7 +65,9 @@ sub too_old_text {
 my %mosaik = ('' => \&act_app, home => \&act_home, dash => \&act_dash, mine => \&act_mine,
               trade => \&act_trade, quote => \&act_quote, orders => \&act_orders, status => \&act_status,
               liq => \&act_liq, liqq => \&act_liqq, liqpos => \&act_liqpos, lstatus => \&act_lstatus,
-              lend => \&act_lend, lendq => \&act_lendq);
+              lend => \&act_lend, lendq => \&act_lendq,
+              sf => \&act_sf, sfmarket => \&act_sfmarket, sforder => \&act_sforder, sfborrow => \&act_sfborrow,
+              sfbq => \&act_sfbq, sfmine => \&act_sfmine);
 
 if ($cgi->cgi_error) { die_json('Bad request') }
 elsif ($action eq 'ergopay') {
@@ -156,6 +158,13 @@ sub base_actions {
         O(type => 'BackendRequestAction', url => "$API?action=liq",    id => 'goLiq',   postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=lend",   id => 'goLend',  postValues => 'VALID'),
         O(type => 'BackendRequestAction', url => "$API?action=lendq",  id => 'lendPreview', postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=sf",       id => 'goSf',      postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=sfmarket", id => 'sfMarket',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=sfborrow", id => 'sfBorrow',  postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=sfmine",   id => 'sfMine',    postValues => 'VALID'),
+        O(type => 'BackendRequestAction', url => "$API?action=sfbq",     id => 'sfPreview', postValues => 'VALID'),
+        O(type => 'ChangeSiteAction', id => 'clearSf',
+          newContent => O(view => O(type => 'Box', id => 'sfresult', children => [ button('Preview', 'sfPreview') ]))),
         O(type => 'ChangeSiteAction', id => 'clearLend',
           newContent => O(view => O(type => 'Box', id => 'lendresult', children => [ button('Preview', 'lendPreview') ]))),
         O(type => 'BackendRequestAction', url => "$API?action=liqq",   id => 'liqPreview', postValues => 'VALID'),
@@ -242,6 +251,10 @@ sub home_view {
                   'Locks about 3 ERG and a few thousand LIT until a miner uses them, and cannot be cancelled once placed. One position per address.'
                  ,
                   'Lend collateral', 'goLend', 'SECONDARY')),
+        $choice->('SigmaFi loans', 'Borrow ERG against tokens you hold, or lend ERG to other people for interest, with SigmaFi V2 bonds.',
+                  'Loans are between two people. A borrower who does not repay in time loses the collateral to the lender. '
+                  . 'SigmaFi V2 is new and its authors still call it not deployed: use small amounts.',
+                  'SigmaFi loans', 'goSf', 'SECONDARY'),
         label('An independent app, not made by the Lithos project. It cannot set up or control a miner: that needs the Lithos client on your own computer.',
               'BODY2', color => 'SECONDARY', talign => 'CENTER'),
         button('lithosprotocol.org', 'openLithos', style => 'TEXT'),
@@ -754,11 +767,319 @@ sub act_lendq {
     mosaik_replace(liq_box('lendresult', \@rows), @extra);
 }
 
+# ================================================================ SigmaFi ==
+# Peer-to-peer loans on the ERG market of SigmaFi V2: ERG is lent and repaid, tokens are the collateral.
+
+use constant SF_DAYS => (7, 14, 30, 60, 90, 180, 365);
+use constant SF_OPEN => (3, 7, 14, 30);
+
+sub tok_text {    # one token amount; the name is untrusted on-chain text, so the id goes with it
+    my ($a) = @_;
+    return '?' unless ref $a eq 'HASH' && ($a->{id} // '') =~ /^[0-9a-f]{64}\z/ && ($a->{amount} // '') =~ /^\d+\z/;
+    my $dec  = (($a->{decimals} // '') =~ /^\d{1,2}\z/) ? $a->{decimals} : 0;
+    my $name = (defined $a->{name} && !ref $a->{name} && length $a->{name}) ? $a->{name} : 'token';
+    return fmt_amount($a->{amount}, $dec) . " $name (" . substr($a->{id}, 0, 6) . "\x{2026})";
+}
+sub sf_collateral {
+    my ($o) = @_;
+    my @t = map { tok_text($_) } @{ ref $o->{collateral} eq 'ARRAY' ? $o->{collateral} : [] };
+    push @t, erg($o->{collateral_erg}) if ($o->{collateral_erg} // 0) > 1000000;
+    return @t ? join(' + ', @t) : 'none';
+}
+sub sf_days { my ($blocks) = @_; my $d = $blocks / 720; return $d >= 2 ? sprintf('%.0f days', $d) : sprintf('%.0f hours', $blocks / 30) }
+sub sf_interest {
+    my ($o, $blocks) = @_;
+    my ($p, $r) = ($o->{principal} + 0, $o->{repayment} + 0);
+    return '?' unless $p > 0 && $blocks > 0;
+    my $pct = ($r - $p) / $p * 100;
+    return sprintf('%.2f %% (%.1f %% a year)', $pct, $pct * 262800 / $blocks);
+}
+sub sf_rule {
+    my ($o) = @_;
+    return 'The lender can take the collateral early if it falls under ' . sprintf('%.0f %%', $o->{ratio_bps} / 100)
+         . ' of the repayment at the ERG/USD oracle price, and in any case from maturity on.' if ($o->{rule} // '') eq 'oracle';
+    return 'The lender can take the collateral only from maturity on, if the loan is not repaid by then.';
+}
+sub sf_ok { my ($o) = @_; return ref $o eq 'HASH' && ($o->{box} // '') =~ /^[0-9a-f]{64}\z/
+                                 && !grep { ($o->{$_} // '') !~ /^\d+\z/ } qw(principal repayment) }
+
+sub sf_view {
+    my ($v, $area, @extra) = @_;
+    my $addr = good_address($v->{address});
+    my @kids = (header_rows('SigmaFi loans'), address_card($addr, 'goSf'),
+        child(card(column([
+            child(label('Peer-to-peer loans in ERG', 'BODY1BOLD'), align => 'START'),
+            note('A borrower locks tokens as collateral and asks for ERG. A lender pays the ERG and receives a bond token. Repaid before '
+                 . 'maturity, the collateral returns to the borrower and the bond holder collects the repayment. Not repaid, the bond holder '
+                 . 'collects the collateral instead.'),
+            button('Open requests: lend ERG', 'sfMarket'),
+            button('Borrow ERG', 'sfBorrow', style => 'SECONDARY'),
+            button('My loans', 'sfMine', style => 'SECONDARY'),
+        ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY'),
+        child($area || O(type => 'Box', id => 'sfarea', children => []), align => 'JUSTIFY'),
+        label('SigmaFi V2 is an open protocol by the Lithos developers. Its authors still describe it as not deployed and have changed its '
+              . 'contracts several times this month: loans made today stay valid, but use small amounts. ' . $WALLET_NOTE,
+              'BODY2', color => 'SECONDARY', talign => 'CENTER'));
+    return (column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT'), @extra);
+}
+sub act_sf { mosaik_replace(sf_view(posted_values())) }
+sub sf_area { my ($rows, @extra) = @_; mosaik_replace(liq_box('sfarea', $rows), @extra) }
+
+sub act_sfmarket {
+    my $addr = good_address(posted_values()->{address});
+    my $m = chain('sfmarket', { $addr ? (address => $addr) : () }, 60);
+    return mosaik_dialog($m->{error} || 'SigmaFi is unavailable right now.') unless $m->{ok};
+    my (@rows, @extra);
+    push @rows, child(label('Open requests', 'BODY1BOLD'), align => 'START');
+    my $n = 0;
+    for my $o (@{ ref $m->{orders} eq 'ARRAY' ? $m->{orders} : [] }) {
+        next unless sf_ok($o) && ($o->{blocks} // 0) > 0;
+        $n++;
+        push @extra, O(type => 'BackendRequestAction', url => "$API?action=sforder&t=$o->{box}", id => "ord$n", postValues => 'VALID');
+        push @rows, O(type => 'HorizontalRule', vPadding => 'QUARTER_DEFAULT'),
+            child(label('Lend ' . erg($o->{principal}) . ', get back ' . erg($o->{repayment}) . ($o->{mine} ? '  (yours)' : ''), 'BODY1BOLD'), align => 'START'),
+            kv_row('Interest', sf_interest($o, $o->{blocks}), style => 'BODY1'),
+            kv_row('Runs', sf_days($o->{blocks}) . ($o->{mode} ? ' from the day it is funded' : ''), style => 'BODY1'),
+            kv_row('Collateral', sf_collateral($o), style => 'BODY1'),
+            (defined $o->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $o->{cover_bps} / 100), style => 'BODY1') : ()),
+            button('Details', "ord$n", style => 'SECONDARY');
+        last if $n >= 10;
+    }
+    push @rows, note('No open requests right now. You can post your own under "Borrow ERG".') unless $n;
+    push @rows, note("$m->{skipped} more request" . ($m->{skipped} == 1 ? ' is' : 's are') . ' not shown: expired, or with terms this app does not handle.') if $m->{skipped};
+    push @rows, button('Refresh', 'sfMarket', style => 'TEXT');
+    sf_area(\@rows, @extra);
+}
+
+sub act_sforder {
+    my $addr = good_address(posted_values()->{address});
+    my $box  = $cgi->url_param('t') // '';
+    return mosaik_dialog('Unknown request.') unless $box =~ /^[0-9a-f]{64}\z/;
+    my $r = chain('sforder', { box => $box, ($addr ? (address => $addr) : ()) }, 60);
+    return mosaik_dialog($r->{error} || 'This request is no longer available.') unless $r->{ok} && sf_ok($r->{order});
+    my $o   = $r->{order};
+    my $fee = cfg('MINER_FEE', 1100000) + 0;
+    my $pay = Math::BigInt->new($o->{principal})->badd($r->{fee_reserve})->badd(1000000);
+    my @rows = (
+        child(label('Loan request', 'BODY1BOLD'), align => 'START'),
+        kv_row('You lend', erg($o->{principal}), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('You are owed', erg($o->{repayment}), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('Interest', sf_interest($o, $o->{blocks})),
+        kv_row('Runs', sf_days($o->{blocks}) . ($o->{mode} ? ' from now' : '')),
+        kv_row('Collateral', sf_collateral($o)),
+        (defined $o->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $o->{cover_bps} / 100)) : ()),
+        O(type => 'HorizontalRule', vPadding => 'HALF_DEFAULT'),
+        kv_row('Liquidation reserve', erg($r->{fee_reserve})),
+        kv_row('Bond token box', erg(1000000)),
+        kv_row('Network fee', erg($fee)),
+        note(sf_rule($o)),
+        note('You receive one bond token. Whoever holds it collects the repayment, so do not send it away or burn it. The reserve comes back '
+             . 'with the repayment; if the loan is not repaid it pays whoever moves the collateral into the vault, which can be you, under "My loans".'),
+        child(row([
+            O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
+            child(label((($o->{rule} // '') eq 'oracle'
+                          ? 'The collateral is SigUSD, counted at 1 USD each. '
+                          : 'Nothing checks what this collateral is worth: judge the token yourself. A worthless token is all you get if the borrower does not repay. ')
+                        . 'The borrower may also repay early, in full.', 'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY'),
+    );
+    my @extra;
+    if (!$addr)                 { push @rows, label('Choose your wallet address above to lend.', 'BODY1', talign => 'CENTER') }
+    elsif ($o->{mine})          { push @rows, label('This is your own request. You can cancel it under "My loans".', 'BODY1', talign => 'CENTER') }
+    elsif (!$o->{fillable})     { push @rows, label('This request cannot be funded right now.', 'BODY1', talign => 'CENTER') }
+    elsif (defined $r->{balance_erg} && Math::BigInt->new($r->{balance_erg})->bcmp($pay->copy->badd($fee + 1000000)) < 0) {
+        push @rows, label('Not enough ERG: funding this needs ' . erg($pay->bstr) . ' plus the network fee.', 'BODY1', talign => 'CENTER');
+    }
+    else {
+        push @extra, sign_pair('sffill', 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&k=sffill&t=$box&a=$o->{principal}&my=$o->{repayment}&addr=$addr", 'sfMarket');
+        push @rows, button('Lend ' . erg($o->{principal}), 'sffill');
+    }
+    push @rows, button('Back to the requests', 'sfMarket', style => 'TEXT');
+    sf_area(\@rows, @extra);
+}
+
+sub sf_form {
+    my ($v) = @_;
+    my $pick = sub { my ($val, $def, @ok) = @_; return (defined $val && !ref $val && grep { $_ eq $val } @ok) ? $val : $def };
+    my %f = (days => $pick->($v->{sfdays}, 30, SF_DAYS), open => $pick->($v->{sfopen}, 7, SF_OPEN));
+    $f{token} = $v->{sftoken} if defined $v->{sftoken} && !ref $v->{sftoken} && $v->{sftoken} =~ /^[0-9a-f]{64}\z/;
+    for my $k (qw(sfc_9 sfp_9 sfr_9)) { $f{$k} = "$v->{$k}" if defined $v->{$k} && !ref $v->{$k} && "$v->{$k}" =~ /^[1-9]\d{0,18}\z/ }
+    return \%f;
+}
+
+sub act_sfborrow {
+    my $v    = posted_values();
+    my $addr = good_address($v->{address}) or return mosaik_dialog('Choose your wallet address first.');
+    my $p = chain('portfolio', { address => $addr }, 60);
+    return mosaik_dialog($p->{error} || 'Could not read your wallet. Please try again.') unless $p->{ok};
+    my @toks = grep { ref $_ eq 'HASH' && ($_->{id} // '') =~ /^[0-9a-f]{64}\z/ && ($_->{amount} // '') =~ /^[1-9]\d*\z/ && ($_->{decimals} // 0) <= 9 }
+               @{ ref $p->{tokens} eq 'ARRAY' ? $p->{tokens} : [] };
+    return sf_area([ child(label('Borrow ERG', 'BODY1BOLD'), align => 'START'),
+                     note('This address holds no tokens to put up as collateral. A loan here is ERG against tokens.') ]) unless @toks;
+    @toks = @toks[0 .. 39] if @toks > 40;
+    my $f = sf_form($v);
+    $f->{token} = $toks[0]{id} unless defined $f->{token} && grep { $_->{id} eq $f->{token} } @toks;
+    my ($sel) = grep { $_->{id} eq $f->{token} } @toks;
+    my $field = sub { my ($id, $ph) = @_;
+        child(O(type => 'DecimalInputField', id => $id, value => defined $f->{$id} ? N($f->{$id}) : undef, placeholder => $ph,
+                onValueChanged => 'clearSf', minValue => N(1), scale => N(9)), align => 'JUSTIFY') };
+    my @rows = (
+        child(label('Borrow ERG', 'BODY1BOLD'), align => 'START'),
+        child(label('Collateral token', 'BODY1'), align => 'START'),
+        child(O(type => 'DropDownList', id => 'sftoken', value => $f->{token}, onValueChanged => 'sfBorrow',
+                entries => O(map { $_->{id} => tok_text({ %$_, amount => '0' }) =~ s/^0 //r } @toks)), align => 'JUSTIFY'),
+        child(label('You hold: ' . tok_text($sel), 'BODY2', color => 'SECONDARY'), align => 'END'),
+        $field->('sfc_9', 'Amount of collateral'),
+        child(label('ERG to borrow', 'BODY1'), align => 'START'), $field->('sfp_9', 'Amount of ERG'),
+        child(label('ERG to repay', 'BODY1'), align => 'START'), $field->('sfr_9', 'Amount of ERG, interest included'),
+        child(label('The loan runs', 'BODY1'), align => 'START'),
+        child(O(type => 'DropDownList', id => 'sfdays', value => "$f->{days}", onValueChanged => 'clearSf',
+                entries => O(map { $_ => "$_ days from the day a lender funds it" } SF_DAYS)), align => 'JUSTIFY'),
+        child(label('The request stays open', 'BODY1'), align => 'START'),
+        child(O(type => 'DropDownList', id => 'sfopen', value => "$f->{open}", onValueChanged => 'clearSf',
+                entries => O(map { $_ => "$_ days" } SF_OPEN)), align => 'JUSTIFY'),
+        note($f->{token} eq '03faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf04'
+             ? 'SigUSD collateral uses the oracle rule: it must be worth at least 157.5 % of the repayment to post the request, and the '
+               . 'lender can take it early if it falls under 150 % at the ERG/USD oracle price.'
+             : 'With this token the lender can take the collateral only if you have not repaid by maturity. Lenders judge the token '
+               . 'themselves, so offer enough of it to make the loan worth their risk. Do not use a LithosDex position NFT or any other '
+               . 'token that controls something: whoever handles the loan would control it too.'),
+        child(O(type => 'Box', id => 'sfresult', children => [ button('Preview', 'sfPreview') ]), align => 'JUSTIFY'),
+    );
+    sf_area(\@rows);
+}
+
+sub act_sfbq {
+    my $v    = posted_values();
+    my $addr = good_address($v->{address}) or return mosaik_dialog('Choose your wallet address first.');
+    my $f    = sf_form($v);
+    return mosaik_dialog('Fill in the collateral, the amount to borrow and the amount to repay.')
+        if !defined $f->{token} || grep { !defined $f->{$_} } qw(sfc_9 sfp_9 sfr_9);
+    my $p = chain('portfolio', { address => $addr }, 60);
+    return mosaik_dialog($p->{error} || 'Could not read your wallet. Please try again.') unless $p->{ok};
+    my ($sel) = grep { ref $_ eq 'HASH' && ($_->{id} // '') eq $f->{token} } @{ ref $p->{tokens} eq 'ARRAY' ? $p->{tokens} : [] };
+    return mosaik_dialog('That token is not on this address.') unless $sel && ($sel->{decimals} // 0) =~ /^\d\z/ && ($sel->{amount} // '') =~ /^\d+\z/;
+    # the field counts in 9 decimals; the token may have fewer
+    my $div = Math::BigInt->new(10)->bpow(9 - $sel->{decimals});
+    my ($amount, $rem) = Math::BigInt->new($f->{sfc_9})->bdiv($div);
+    return mosaik_dialog("That token has only $sel->{decimals} decimal places.") unless $rem->is_zero && !$amount->is_zero;
+    return mosaik_dialog('This address holds less of that token than the collateral you entered.') if $amount->bcmp(Math::BigInt->new($sel->{amount})) > 0;
+    my ($pr, $re) = ($f->{sfp_9}, $f->{sfr_9});
+    return mosaik_dialog('The least you can borrow here is 0.01 ERG.') if $pr < 10000000;
+    return mosaik_dialog('The repayment must be at least what you borrow, and at most three times it.')
+        if Math::BigInt->new($re)->bcmp($pr) < 0 || Math::BigInt->new($re)->bcmp(Math::BigInt->new($pr)->bmul(3)) > 0;
+    my $fee = cfg('MINER_FEE', 1100000) + 0;
+    my $o = { principal => $pr, repayment => $re };
+    my @rows = (
+        kv_row('You lock', tok_text({ %$sel, amount => $amount->bstr }), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('You receive, once a lender funds it', erg($pr), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('You repay', erg($re)),
+        kv_row('Interest', sf_interest($o, $f->{days} * 720)),
+        kv_row('Repay within', "$f->{days} days of the funding"),
+        kv_row('Request open for', "$f->{open} days"),
+        kv_row('Held with the request', erg(6000000)),
+        kv_row('Network fee', erg($fee)),
+        child(row([
+            O(type => 'Icon', icon => 'WARN', size => 'SMALL', tintColor => 'PRIMARY'),
+            child(label('Repay in full before maturity, under "My loans". After maturity you can no longer repay and the lender takes ALL the '
+                        . 'collateral, whatever it is worth by then.', 'BODY2BOLD', color => 'PRIMARY'), weight => N(1)),
+        ], spacing => 'HALF_DEFAULT'), align => 'JUSTIFY'),
+        note('Nothing is lent until a lender funds the request. Until then you can cancel it under "My loans" and get everything back except '
+             . 'the network fees. If nobody funds it, anyone may return it to you after it closes, for 0.005 ERG of what is held with it.'),
+    );
+    my @extra;
+    if (defined $p->{erg} && Math::BigInt->new($p->{erg})->bcmp(6000000 + $fee + 2000000) < 0) {
+        push @rows, label('Not enough ERG: posting the request needs about 0.01 ERG.', 'BODY1', talign => 'CENTER');
+    }
+    else {
+        push @extra, sign_pair('sfnew', 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&k=sfnew&t=$f->{token}&a=" . $amount->bstr
+                                        . "&my=$pr&ms=$re&d=$f->{days}&o=$f->{open}&addr=$addr", 'sfMine');
+        push @rows, button('Post the request', 'sfnew');
+    }
+    push @rows, button('Refresh', 'sfPreview', style => 'TEXT');
+    mosaik_replace(liq_box('sfresult', \@rows), @extra);
+}
+
+sub act_sfmine {
+    my $addr = good_address(posted_values()->{address}) or return mosaik_dialog('Choose your wallet address first.');
+    my $m = chain('sfmine', { address => $addr }, 90);
+    return mosaik_dialog($m->{error} || 'SigmaFi is unavailable right now.') unless $m->{ok};
+    my (@rows, @extra);
+    my $n = 0;
+    my $list = sub { my ($k) = @_; grep { ref $_ eq 'HASH' && ($_->{box} // '') =~ /^[0-9a-f]{64}\z/ } @{ ref $m->{$k} eq 'ARRAY' ? $m->{$k} : [] } };
+    my $pay  = sub { my ($kind, $box, $text, $style) = @_;
+        $n++;
+        push @extra, sign_pair("$kind$n", 'ergopay://' . ergopay_host() . "/api.pl?action=ergopay&k=$kind&t=$box&addr=$addr", 'sfMine');
+        return button($text, "$kind$n", $style ? (style => $style) : ());
+    };
+    my $rule = sub { O(type => 'HorizontalRule', vPadding => 'QUARTER_DEFAULT') };
+
+    push @rows, child(label('To collect', 'BODY1BOLD'), align => 'START');
+    my $c = 0;
+    for my $x ($list->('claims')) {
+        last if ++$c > 6;
+        my @t = map { tok_text($_) } @{ ref $x->{tokens} eq 'ARRAY' ? $x->{tokens} : [] };
+        push @rows, $rule->(),
+            kv_row($x->{how} eq 'repaid' ? 'A loan you funded was repaid' : 'A loan you funded was not repaid', '', style => 'BODY1'),
+            kv_row('In the vault', join(' + ', erg($x->{erg}), @t)),
+            $pay->('sfclaim', $x->{box}, 'Collect');
+    }
+    push @rows, note('Nothing to collect.') unless $c;
+
+    push @rows, $rule->(), child(label('Loans I funded', 'BODY1BOLD'), align => 'START');
+    $c = 0;
+    for my $b ($list->('lent')) {
+        next unless sf_ok($b);
+        last if ++$c > 6;
+        my $due = ($b->{state} // '') ne 'live';
+        push @rows, $rule->(),
+            kv_row('Owed to you', erg($b->{repayment})),
+            kv_row('Collateral', sf_collateral($b), style => 'BODY1'),
+            (defined $b->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $b->{cover_bps} / 100), style => 'BODY1') : ()),
+            kv_row('Status', $b->{state} eq 'due' ? 'not repaid: maturity passed' : $b->{state} eq 'at_risk' ? 'collateral under its ratio'
+                             : 'running, ' . sf_days($b->{blocks}) . ' left', style => 'BODY1');
+        push @rows, $pay->('sfliq', $b->{box}, 'Move the collateral to the vault'),
+                    note('Then it appears under "To collect". This step also pays you the liquidation reserve.') if $due;
+    }
+    push @rows, note('No running loans funded from this address. A loan shows here while its bond token is in this wallet.') unless $c;
+
+    push @rows, $rule->(), child(label('My debts', 'BODY1BOLD'), align => 'START');
+    $c = 0;
+    for my $b ($list->('debts')) {
+        next unless sf_ok($b);
+        last if ++$c > 6;
+        push @rows, $rule->(),
+            kv_row('To repay', erg($b->{repayment}), color => 'PRIMARY'),
+            kv_row('Collateral locked', sf_collateral($b), style => 'BODY1'),
+            (defined $b->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $b->{cover_bps} / 100)
+                                              . (defined $b->{ratio_bps} ? sprintf(' (taken under %.0f %%)', $b->{ratio_bps} / 100) : ''), style => 'BODY1') : ()),
+            kv_row('Time left to repay', $b->{blocks} > 3 ? sf_days($b->{blocks}) : 'none', style => 'BODY1');
+        if ($b->{blocks} > 3) { push @rows, $pay->('sfrepay', $b->{box}, 'Repay ' . erg($b->{repayment})) }
+        else                  { push @rows, note('Maturity has passed: this loan can no longer be repaid, and the lender can take the collateral.') }
+    }
+    push @rows, note('No debts on this address.') unless $c;
+
+    push @rows, $rule->(), child(label('My open requests', 'BODY1BOLD'), align => 'START');
+    $c = 0;
+    for my $o ($list->('orders')) {
+        next unless sf_ok($o);
+        last if ++$c > 6;
+        push @rows, $rule->(),
+            kv_row('Asking for', erg($o->{principal}) . ', repaying ' . erg($o->{repayment}), style => 'BODY1'),
+            kv_row('Collateral', sf_collateral($o), style => 'BODY1'),
+            kv_row('Open for', ($o->{blocks_to_expiry} // 0) > 0 ? sf_days($o->{blocks_to_expiry}) . ' more' : 'closed: not funded', style => 'BODY1'),
+            $pay->('sfcancel', $o->{box}, 'Cancel and take the collateral back', 'SECONDARY');
+    }
+    push @rows, note('No open requests from this address.') unless $c;
+    push @rows, button('Refresh', 'sfMine', style => 'TEXT');
+    sf_area(\@rows, @extra);
+}
+
 sub act_liq { return mosaik_dialog(too_old_text()) if $TOO_OLD; mosaik_replace(liq_view(posted_values())) }
 
 sub sign_pair {    # (status action, ErgoPayAction) for one signing link, tied together by a fresh note id
     my ($id, $url, $after) = @_;
-    my ($kind) = $url =~ /[?&]k=(dep|claim|close|join|reward|swap)\b/;
+    my ($kind) = $url =~ /[?&]k=(dep|claim|close|join|reward|swap|sfnew|sffill|sfcancel|sfrepay|sfliq|sfclaim)\b/;
     my $nonce = new_nonce();
     my $ok = defined $nonce && record_file($nonce);
     my @a;
@@ -819,7 +1140,7 @@ sub act_liqq {
 sub liq_state {
     my ($rec) = @_;
     my $kind = $rec->{kind} // '';
-    if ($kind =~ /^(claim|join|reward|swap)\z/) {
+    if ($kind =~ /^(claim|join|reward|swap|sf\w+)\z/) {
         my $r = chain('status', { tx_id => $rec->{tx_id}, watch_box => $rec->{watch_box}, mode => 'bridge', address => $rec->{address} });
         return $r->{ok} ? ($r->{state} // 'unknown') : 'unknown';
     }
@@ -833,13 +1154,14 @@ sub act_lstatus {
     my $rec  = load_record($nonce);
     my $kind = ($rec && ($rec->{app} // '') eq 'lithos') ? ($rec->{kind} // '') : '';
     # before the wallet fetched anything there is no note yet: the kind is then carried in the link
-    $kind = $cgi->url_param('k') // '' unless $kind =~ /^(dep|claim|close|join|reward|swap)\z/;
-    $kind = 'dep' unless $kind =~ /^(dep|claim|close|join|reward|swap)\z/;
+    $kind = $cgi->url_param('k') // '' unless $kind =~ /^(dep|claim|close|join|reward|swap|sfnew|sffill|sfcancel|sfrepay|sfliq|sfclaim)\z/;
+    $kind = 'dep' unless $kind =~ /^(dep|claim|close|join|reward|swap|sfnew|sffill|sfcancel|sfrepay|sfliq|sfclaim)\z/;
     my $lend  = $kind =~ /^(join|reward)\z/ ? 1 : 0;
-    my $area  = $kind eq 'swap' ? 'result' : $kind eq 'dep' ? 'liqresult' : $kind eq 'join' ? 'lendresult' : $kind eq 'reward' ? 'lendreward' : 'liqpos';
+    my $area  = $kind =~ /^sf/ ? 'sfarea' : $kind eq 'swap' ? 'result' : $kind eq 'dep' ? 'liqresult' : $kind eq 'join' ? 'lendresult' : $kind eq 'reward' ? 'lendreward' : 'liqpos';
     my $self  = O(type => 'BackendRequestAction', url => "$API?action=lstatus&n=$nonce&k=$kind", id => 'lstatus', postValues => 'NONE');
     my $again = button('Refresh status', 'lstatus', style => 'SECONDARY');
-    my $back  = $kind eq 'swap' ? button('Back to the form', 'clearResult', style => 'TEXT')
+    my $back  = $kind =~ /^sf/ ? button('My loans', 'sfMine', style => 'TEXT')
+              : $kind eq 'swap' ? button('Back to the form', 'clearResult', style => 'TEXT')
               : $lend ? button('Back to lending', 'goLend', style => 'TEXT')
               : $kind eq 'dep' ? button('Back to the form', 'clearLiq', style => 'TEXT') : button('Back to my positions', 'liqPos', style => 'TEXT');
     my $row   = sub { child(label($_[0], $_[1] || 'BODY1'), align => 'START') };
@@ -855,8 +1177,14 @@ sub act_lstatus {
                 claim => [ 'Fees collected', 'You received ' . erg($rec->{claim_erg} // 0, 6) . ' and ' . lit($rec->{claim_lit} // 0, 4) . '.' ],
                 join  => [ 'Position opened', 'You are in the Lithos collateral queue. "Lend collateral" shows how many positions are ahead of yours.' ],
                 reward => [ 'Rewards collected', 'You received ' . erg($rec->{net} // 0, 4) . '.' ],
+                sfnew    => [ 'Request posted', 'Lenders can now fund it. It is listed under "My loans" and "Open requests".' ],
+                sffill   => [ 'Loan funded', 'The bond token is in your wallet. Keep it: it is your claim. The loan is listed under "My loans".' ],
+                sfcancel => [ 'Request cancelled', 'The collateral is back on your address.' ],
+                sfrepay  => [ 'Loan repaid', 'Your collateral is back on your address.' ],
+                sfliq    => [ 'Collateral moved to the vault', 'Collect it under "My loans", in "To collect".' ],
+                sfclaim  => [ 'Collected', 'The contents of the vault are on your address.' ],
                 swap  => [ 'Swap done', 'You received ' . unit($rec->{to} // ERG, $rec->{out} // 0, 4) . ' for ' . unit($rec->{from} // ERG, $rec->{amount} // 0) . '.' ]);
-    if ($st eq 'filled' || ($kind =~ /^(claim|join|reward|swap)\z/ && $st eq 'confirmed')) { @rows = ($row->($done{$kind}[0], 'BODY1BOLD'), $row->($done{$kind}[1]), $back) }
+    if ($st eq 'filled' || ($kind =~ /^(claim|join|reward|swap|sf\w+)\z/ && $st eq 'confirmed')) { @rows = ($row->($done{$kind}[0], 'BODY1BOLD'), $row->($done{$kind}[1]), $back) }
     elsif ($st eq 'open') {
         @rows = ($row->('Waiting for a Lithos miner', 'BODY1BOLD'),
                  $row->('The order is on the blockchain. A Lithos miner usually fills it within a few minutes; you can cancel it under '
@@ -865,7 +1193,8 @@ sub act_lstatus {
     elsif ($st eq 'cancelled') { @rows = ($row->('Order cancelled', 'BODY1BOLD'), $row->('Everything in the order is back on your address.'), $back) }
     elsif ($st eq 'pending')   { @rows = ($row->('Submitted', 'BODY1BOLD'), $row->('Waiting for the next Ergo block (about two minutes).'), $again) }
     elsif ($st eq 'failed')    { @rows = ($row->('It did not go through', 'BODY1BOLD'),
-                                          $row->($kind eq 'swap' ? 'The pool was used by another trade first, so your swap was rejected. Nothing was spent. Preview it again.'
+                                          $row->($kind =~ /^sf/ ? 'Someone else used that request or loan first, so your transaction was rejected. Nothing was spent. Please refresh.'
+                                                 : $kind eq 'swap' ? 'The pool was used by another trade first, so your swap was rejected. Nothing was spent. Preview it again.'
                                                                 : 'Something it needed was spent by another transaction first. Nothing was lost. Please try again.'), $back) }
     elsif (time - ($rec->{t} || time) < 180) {
         @rows = ($row->('Waiting for the network', 'BODY1BOLD'), $row->('Your transaction has not shown up yet. This can take a moment after signing.'), $again, $back);
@@ -964,11 +1293,14 @@ sub act_status {
 sub act_notify {
     notify_json(notifications('lithos', sub {
         my ($it) = @_;
-        if (($it->{kind} // '') =~ /^(dep|claim|close|join|reward|swap)\z/) {
+        if (($it->{kind} // '') =~ /^(dep|claim|close|join|reward|swap|sfnew|sffill|sfcancel|sfrepay|sfliq|sfclaim)\z/) {
             my $st = liq_state($it);
             return (1, 'Your liquidity was added to the LithosDex pool. The LD-NFT in your wallet is your position.') if $it->{kind} eq 'dep' && $st eq 'filled';
             return (1, 'Your LithosDex position was closed and paid out.') if $it->{kind} eq 'close' && $st eq 'filled';
             return (1, 'You joined the Lithos collateral queue.') if $it->{kind} eq 'join' && $st eq 'confirmed';
+            return (1, 'Your SigmaFi loan request is posted.') if $it->{kind} eq 'sfnew' && $st eq 'confirmed';
+            return (1, 'You funded a SigmaFi loan. Keep the bond token: it is your claim.') if $it->{kind} eq 'sffill' && $st eq 'confirmed';
+            return (1, 'Your SigmaFi loan is repaid and the collateral is back.') if $it->{kind} eq 'sfrepay' && $st eq 'confirmed';
             return (1, 'Your LIT swap went through: you received ' . unit($it->{to}, $it->{out}, 4) . '.') if $it->{kind} eq 'swap' && $st eq 'confirmed' && $it->{to} && $it->{out};
             return (1, 'Your LIT swap did not go through: the pool was used by another trade first. Nothing was spent.') if $it->{kind} eq 'swap' && $st eq 'failed';
             return (1) if $st =~ /^(confirmed|cancelled|failed|filled)\z/;
@@ -994,7 +1326,7 @@ sub act_notify {
 sub ergopay_error { out_json(O(message => $_[0], messageSeverity => 'ERROR')) }
 
 sub act_ergopay {
-    my %p = map { $_ => scalar $cgi->param($_) } qw(side a m addr n r k my ms t);
+    my %p = map { $_ => scalar $cgi->param($_) } qw(side a m addr n r k my ms t d o);
     my $addr = good_address($p{addr}) or return ergopay_error('Invalid request.');
     if (defined $p{r}) {    # cancel: only the owner's key can spend the order, and the helper checks it is theirs
         return ergopay_error('Invalid request.') unless $p{r} =~ /^[0-9a-f]{64}\z/;
@@ -1010,7 +1342,7 @@ sub act_ergopay {
     }
     my $note = (defined $p{n} && $p{n} =~ /^[0-9a-f]{32}\z/ && note_is_ours($p{n}, 'lithos')) ? $p{n} : undef;
     if (defined $p{k}) {    # liquidity: deposit order, fee collection, closing order
-        return ergopay_error('Invalid request.') unless $p{k} =~ /^(dep|claim|close|join|reward|swap)\z/;
+        return ergopay_error('Invalid request.') unless $p{k} =~ /^(dep|claim|close|join|reward|swap|sfnew|sffill|sfcancel|sfrepay|sfliq|sfclaim)\z/;
         my ($r, $msg);
         if ($p{k} eq 'dep') {
             return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my ms);
@@ -1018,6 +1350,41 @@ sub act_ergopay {
             $msg = sub { 'SigmaLithos: place a LithosDex deposit order adding ' . erg($r->{amount_x}) . ' and ' . lit($r->{amount_y}, 4)
                          . ' to the ERG:LIT pool. A Lithos miner fills it (fee ' . erg($r->{executor_fee}) . ') and you receive an LD-NFT that '
                          . 'owns the position; 0.6 ERG is held as the position deposit. You can cancel in SigmaLithos until it is filled.' };
+        }
+        elsif ($p{k} =~ /^sf/) {
+            return ergopay_error('Invalid request.') unless defined $p{t} && $p{t} =~ /^[0-9a-f]{64}\z/;
+            if ($p{k} eq 'sfnew') {
+                return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my ms d o);
+                $r = chain('sfcreate', { token => $p{t}, amount => $p{a}, principal => $p{my}, repayment => $p{ms}, days => $p{d},
+                                         open_days => $p{o}, address => $addr }, 90);
+                $msg = sub { 'SigmaLithos: post a SigmaFi loan request. Your collateral is locked in the request; a lender who funds it pays you '
+                             . erg($r->{principal}) . ", and you must repay " . erg($r->{repayment}) . " within $r->{days} days of the funding "
+                             . 'or lose ALL the collateral. You can cancel in SigmaLithos until it is funded.' };
+            }
+            elsif ($p{k} eq 'sffill') {
+                return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my);
+                $r = chain('sffill', { box => $p{t}, principal => $p{a}, repayment => $p{my}, address => $addr }, 90);
+                $msg = sub { 'SigmaLithos: LEND ' . erg($r->{principal}) . ' on SigmaFi, to be repaid ' . erg($r->{repayment}) . ' within '
+                             . sf_days($r->{blocks}) . '. You also put in a ' . erg($r->{reserve}) . ' reserve that comes back with the repayment. '
+                             . 'You receive a bond token: keep it, it is your claim. If the borrower does not repay you get the collateral, not ERG.' };
+            }
+            elsif ($p{k} eq 'sfcancel') {
+                $r = chain('sfcancel', { box => $p{t}, address => $addr }, 90);
+                $msg = sub { 'SigmaLithos: cancel your SigmaFi loan request and take the collateral back.' };
+            }
+            elsif ($p{k} eq 'sfrepay') {
+                $r = chain('sfrepay', { box => $p{t}, address => $addr }, 90);
+                $msg = sub { 'SigmaLithos: repay your SigmaFi loan with ' . erg($r->{repayment}) . '. Your collateral returns to this address in the same transaction.' };
+            }
+            elsif ($p{k} eq 'sfliq') {
+                $r = chain('sfliquidate', { box => $p{t}, address => $addr }, 90);
+                $msg = sub { 'SigmaLithos: move the collateral of an unpaid SigmaFi loan into its vault. You are paid ' . erg($r->{reward}, 4)
+                             . ' from the loan\'s reserve. The bond holder then collects the vault.' };
+            }
+            else {
+                $r = chain('sfclaim', { box => $p{t}, address => $addr }, 90);
+                $msg = sub { 'SigmaLithos: collect a settled SigmaFi loan: ' . erg($r->{erg}) . ' and any collateral in the vault come to this address. The bond token is burned.' };
+            }
         }
         elsif ($p{k} eq 'swap') {
             return ergopay_error('Invalid request.') unless ($p{side} // '') =~ /^(buy|sell)\z/;
@@ -1058,7 +1425,7 @@ sub act_ergopay {
                              net => $r->{net}, from => $r->{from}, to => $r->{to}, amount => $r->{amount}, out => $r->{out} }) if $note;
         warn "sigmalithos: built $p{k} tx $r->{tx_id}\n";
         return out_json(O(reducedTx => $r->{reduced_tx}, address => $r->{address}, message => $msg->() . ' Network fee ' . erg($r->{miner_fee}) . '.',
-                          messageSeverity => $p{k} =~ /^(close|join)\z/ ? 'WARNING' : 'INFORMATION'));
+                          messageSeverity => $p{k} =~ /^(close|join|sfnew|sffill)\z/ ? 'WARNING' : 'INFORMATION'));
     }
     return ergopay_error('Invalid request.')
         unless defined $p{side} && $p{side} =~ /^(buy|sell)\z/ && !grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a m);

@@ -1,0 +1,25 @@
+diff --git a/ergotree-ir/src/mir/expr.rs b/ergotree-ir/src/mir/expr.rs
+index d286121..a7184e6 100644
+--- a/ergotree-ir/src/mir/expr.rs
++++ b/ergotree-ir/src/mir/expr.rs
+@@ -416,13 +416,13 @@ impl Expr {
+             |expr| {
+                 let (tpe, parsed_expr): (&mut SType, Expr) = match expr {
+                     Expr::DeserializeContext(DeserializeContext { tpe, id }) => {
+-                        let vec = ctx
+-                            .extension
+-                            .values
+-                            .get(&*id)
+-                            .ok_or(SubstDeserializeError::ExtensionKeyNotFound(*id))?
+-                            .clone()
+-                            .try_extract_into::<Vec<u8>>()?;
++                        // A variable that is absent leaves the node in place, so it only errors if
++                        // evaluation reaches it. This is what the reference (Scala) interpreter does:
++                        // a script may guard executeFromVar behind getVar(id).isDefined.
++                        let vec = match ctx.extension.values.get(&*id) {
++                            Some(v) => v.clone().try_extract_into::<Vec<u8>>()?,
++                            None => return Ok(()),
++                        };
+                         (
+                             tpe,
+                             sigma_byte_reader::from_bytes(&vec)

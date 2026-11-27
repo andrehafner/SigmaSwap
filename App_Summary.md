@@ -176,6 +176,14 @@
   transaction is reduced against a stand-in box of the same value owned by that key and the real box id is put
   back, because the library cannot evaluate the contract (see limitations). Open orders are found on-chain by
   the contracts' template hashes and kept only if they belong to the address and the ERG:LIT pool.
+- **SigmaLithos SigmaFi loans** (needs the patched ergo-lib 0.29 in `vendor/`): the ZC Standard contracts of
+  Sigma-Finance-V2 at commit `adce8ac`, ERG market, pinned byte for byte and self-checked against their published
+  hashes. `sfmarket`/`sforder` list open `Order` boxes; `sfmine` finds an address's requests (order R6), debts (bond
+  R5) and funded loans or settled vaults (bond units it holds). `sfcreate` posts a request (maturity rule, or the
+  ERG/SigUSD oracle rule with its fill guard for SigUSD collateral) and is only returned if a simulated lender fill
+  of that exact box passes the order contract. `sffill` mints the 3 bond units and is refused if the order's terms
+  differ from the ones previewed. `sfcancel`, `sfrepay` (borrower only), `sfliquidate` (at maturity, or early under
+  the oracle rule) and `sfclaim` each pass the real contract in simulation before a signing link is answered.
 - **SigmaLithos direct swap** (needs ergo-lib 0.29; otherwise only orders are offered): `ldswap` spends the LithosDex
   pool box together with the user's boxes into the updated pool and the user's change, and is only returned if the pool
   contract accepts it in simulation and the output is at least the user's minimum. No executor is paid. A competing
@@ -344,6 +352,13 @@
   it is off by default. The gate is a convenience, not a control: the signing link itself cannot see the
   wallet version, and an old wallet that follows one simply fails to sign. Three orders were placed and filled on
   mainnet with a 2.5.1 build; a cancel has not confirmed yet (the one attempt lost the race to a fill).
+- **SigmaFi loans have not been used on-chain from this app.** Fill, cancel and repay were accepted by the real
+  contracts against the live orders and bond; posting a request, liquidation (maturity and oracle) and collecting a
+  vault were accepted against stand-in boxes. Nothing was signed or broadcast. The protocol calls itself not deployed,
+  had 4 orders and 3 bonds on chain when this was written, and has re-pinned its contracts three times in two weeks; a
+  re-pin leaves this app blind to newer boxes until its pins are updated, while existing loans keep working.
+  Priced and window orders, lend offers, shares, asks, wraps, recollateralizing and the SigUSD market are not handled.
+  The library patch in `vendor/` is this project's own, not upstream.
 - **LIT direct swaps have not been used on-chain from this app.** Both directions are accepted by the live pool
   contract in simulation; none was signed or broadcast.
 - **Lithos lending has not been used on-chain from this app.** Joins at several priority fees are accepted by the

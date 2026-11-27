@@ -11,7 +11,7 @@ the app prepares a transaction, and your wallet shows it and signs it.
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
 | **SigmaBridge** | Take funds out of Ergo: ERG and tokens to other chains over the Rosen bridge, or ERG sold for another coin through the Swapuz exchange | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 | **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
-| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, providing liquidity there, and lending collateral to the pool | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
+| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, providing liquidity there, lending collateral to the pool, and SigmaFi V2 loans (borrow ERG against tokens, or lend it) | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -63,6 +63,13 @@ app, do not sign it.
 - **A LithosDex liquidity position is an NFT.** Whoever holds the LD-NFT owns the position, its fees and its
   share of the pool. Send it away or burn it and the position is gone. Collect fees before closing: closing
   leaves uncollected fees behind for good.
+- **SigmaFi loans are between two people, on new contracts.** A borrower who has not repaid in full by
+  maturity can no longer repay, and the lender takes ALL the collateral whatever it is worth. A lender gets the
+  collateral, not ERG, if the borrower does not repay, and nothing checks what a collateral token is worth
+  (only SigUSD is measured, by the ERG/USD oracle, at 1 USD each). The lender's claim is a bond token: lose it
+  and the claim is lost. SigmaFi V2's authors still describe it as not deployed and re-issued its contracts
+  several times in November 2026; this app pins one version and does not see loans made under another.
+  Only the ERG market, plain requests, and the maturity and ERG/SigUSD oracle rules are handled.
 - **Lending collateral cannot be cancelled.** A position locks 2.915 ERG, an optional priority fee and a LIT
   permit (several thousand LIT) until a Lithos miner uses it. How long that takes depends on the queue and on
   how often Lithos finds blocks; if it stopped finding blocks the position would keep waiting. When it is used
