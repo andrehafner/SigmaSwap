@@ -2736,7 +2736,7 @@ def cmd_ldquote(req):
     cfg = req["cfg"]
     pool = ld_pool(cfg)
     res = {"price_9": str(pool.rx * 10 ** 9 // pool.ry), "reserve_erg": str(pool.rx), "reserve_lit": str(pool.ry),
-           "executor_fee": str(LD_EXECUTOR_FEE), "returned": str(LD_RETURNED)}
+           "executor_fee": str(LD_EXECUTOR_FEE), "returned": str(LD_RETURNED), "direct": bool(lib_evaluates_v6())}
     if req.get("amount") is not None:
         amount = req_amount(req.get("amount"), "amount")
         t = _ld_terms(pool, req.get("side"), amount)
@@ -2744,7 +2744,8 @@ def cmd_ldquote(req):
             raise SwapError("This amount is too small: the fees would eat it.")
         res.update({"out": str(t["out"]), "from": t["from"], "to": t["to"], "amount": str(amount),
                     "impact_bps": max(0, (t["spot_out"] - t["out"]) * 10000 // max(1, t["spot_out"])),
-                    "pool_fee_bps": (LD_FEE_DENOM - pool.fee) + (pool.fee_x if t["kind"] == "sell" else pool.fee_y)})
+                    "pool_fee_bps": (LD_FEE_DENOM - pool.fee) + (pool.fee_x if t["kind"] == "sell" else pool.fee_y),
+                    "direct_out": str(t["out"] + (LD_EXECUTOR_FEE if t["kind"] == "buy" else 0))})
     if req.get("address"):
         req_address(req["address"])
         bal = explorer(cfg, "addresses/%s/balance/confirmed" % urllib.parse.quote(req["address"], safe="")) or {}
@@ -2827,6 +2828,96 @@ def cmd_ldbuild(req):
         "amount": str(amount), "out": str(t["out"]), "min_out": str(min_out), "miner_fee": str(fee),
         "executor_fee": str(LD_EXECUTOR_FEE), "watch_box": hexid(chosen[0].box_id), "order_box": hexid(order_box.box_id),
     }
+
+
+def cmd_ldswap(req):
+    """Swap against the LithosDex pool directly, in one transaction the user signs: no order, no miner.
+
+    [pool (swap), the user's boxes] -> [pool', the user's boxes, miner fee]. The pool contract lets
+    anyone spend it as long as the pool it leaves behind is right, and it is asked here before the
+    transaction is handed out. What the user receives is fixed in the transaction, so there is no
+    slippage after signing; if the pool is spent first the transaction is simply rejected.
+    """
+    from ergo_lib_python.chain import ErgoBox, NetworkPrefix
+    from ergo_lib_python.transaction import ReducedTransaction
+    cfg = req["cfg"]
+    _need_v6()
+    side = req.get("side")
+    amount = req_amount(req.get("amount"), "amount")
+    min_out = req_amount(req.get("min_out"), "minimum output")
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    fee = miner_fee(cfg)
+    pool = ld_pool(cfg)
+    raw = pool.raw
+    if side == "buy":                                   # ERG in, LIT out
+        out, fee_bps = pool.sell_out(amount), pool.fee_x
+    elif side == "sell":                                # LIT in, ERG out
+        out, fee_bps = pool.buy_out(amount), pool.fee_y
+    else:
+        raise SwapError("Choose whether to buy or sell LIT.")
+    if out <= 0:
+        raise SwapError("This amount is too small.")
+    if out < min_out:
+        raise SwapError("The price moved beyond your slippage tolerance. Please preview the swap again.")
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    try:
+        reg = raw["additionalRegisters"]
+        pend = [int(x) for x in json.loads(reg["R6"]["renderedValue"])]
+        acc = {"R7": int(reg["R7"]["renderedValue"].strip("CBigInt()")), "R8": int(reg["R8"]["renderedValue"].strip("CBigInt()"))}
+        supply = LD_LOCKED_LP - int(reg["R4"]["renderedValue"])
+        assets = [[a["tokenId"], int(a["amount"])] for a in raw["assets"]]
+        fee_part = fee_bps * amount // LD_FEE_DENOM
+    except (KeyError, ValueError, TypeError):
+        raise SwapError("The LithosDex pool is unavailable right now.")
+    if side == "buy":
+        pend[0] += fee_part
+        acc["R7"] += fee_part * LD_ACC_SCALE // supply
+        pool_value = int(raw["value"]) + amount
+        assets[1][1] -= out
+        pay_erg, pay_tok = amount, 0
+    else:
+        pend[1] += fee_part
+        acc["R8"] += fee_part * LD_ACC_SCALE // supply
+        pool_value = int(raw["value"]) - out
+        assets[1][1] += amount
+        pay_erg, pay_tok = 0, amount
+
+    def need_erg(toks):
+        left = dict(toks)
+        if pay_tok and left.get(LIT_ID) == pay_tok:
+            left.pop(LIT_ID)
+        n = len(set(left) | ({LIT_ID} if side == "buy" else set()))
+        return max(0, pay_erg - (out if side == "sell" else 0)) + fee + change_need(n)
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, LIT_ID if pay_tok else None, pay_tok)
+    ctx, height = chain_context(cfg)
+    out_toks = dict(user_toks)
+    if side == "buy":
+        out_toks[LIT_ID] = out_toks.get(LIT_ID, 0) + out
+        user_left = user_erg - amount - fee
+    else:
+        out_toks[LIT_ID] -= amount
+        user_left = user_erg + out - fee
+    tx_json = {"inputs": [{"boxId": raw["boxId"], "extension": {"0": "0200"}}]                 # pool: swap
+                         + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [],
+               "outputs": [_box_json(pool_value, raw["ergoTree"], height, assets,
+                                     {"R4": reg["R4"]["serializedValue"], "R5": reg["R5"]["serializedValue"], "R6": _coll_long(pend),
+                                      "R7": _ld_bigint(acc["R7"]).hex(), "R8": _ld_bigint(acc["R8"]).hex()})]
+                          + _user_boxes_json(address, height, out_toks, user_left)
+                          + [_box_json(fee, MINER_FEE_TREE, height)]}
+    boxes = [ErgoBox.from_json(raw)] + chosen
+    try:
+        tx = _prove(tx_json, boxes, ctx, (0,))                # the pool accepts
+        reduced = ReducedTransaction.from_unsigned_tx(tx, boxes, [], ctx)
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: lithos direct swap refused: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("The swap could not be prepared: the pool changed. Please preview it again.")
+    return {"reduced_tx": base64.urlsafe_b64encode(bytes(reduced)).decode("ascii"), "tx_id": hexid(tx.id),
+            "address": addr_str, "side": side, "from": ERG_ID if side == "buy" else LIT_ID, "to": LIT_ID if side == "buy" else ERG_ID,
+            "amount": str(amount), "out": str(out), "miner_fee": str(fee), "watch_box": hexid(chosen[0].box_id)}
 
 
 def _ld_order_view(box, pk=None):
@@ -3892,7 +3983,7 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "netstats": cmd_netstats, "portfolio": cmd_portfolio,
             "lendinfo": cmd_lendinfo, "lendjoin": cmd_lendjoin, "lendclaim": cmd_lendclaim,
             "ldlpquote": cmd_ldlpquote, "ldlpbuild": cmd_ldlpbuild, "ldpositions": cmd_ldpositions, "ldclaim": cmd_ldclaim,
-            "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
+            "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "ldswap": cmd_ldswap, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
             "ldstatus": cmd_ldstatus, "lithosstats": cmd_lithosstats, "lithosminer": cmd_lithosminer,
             "szcoins": cmd_szcoins, "szquote": cmd_szquote, "szorder": cmd_szorder, "szstatus": cmd_szstatus}
 

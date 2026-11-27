@@ -176,6 +176,10 @@
   transaction is reduced against a stand-in box of the same value owned by that key and the real box id is put
   back, because the library cannot evaluate the contract (see limitations). Open orders are found on-chain by
   the contracts' template hashes and kept only if they belong to the address and the ERG:LIT pool.
+- **SigmaLithos direct swap** (needs ergo-lib 0.29; otherwise only orders are offered): `ldswap` spends the LithosDex
+  pool box together with the user's boxes into the updated pool and the user's change, and is only returned if the pool
+  contract accepts it in simulation and the output is at least the user's minimum. No executor is paid. A competing
+  spend of the pool makes the transaction invalid; nothing is lost.
 - **SigmaLithos lending** (needs ergo-lib 0.29): `lendinfo` reads the emission and config boxes (permit =
   min(floor + slope x backlog, ceiling), queue length, active set) and where the address's key stands (queue box,
   active set, reward boxes). `lendjoin` spends the emission box together with the user's boxes into a queue box
@@ -340,6 +344,8 @@
   it is off by default. The gate is a convenience, not a control: the signing link itself cannot see the
   wallet version, and an old wallet that follows one simply fails to sign. Three orders were placed and filled on
   mainnet with a 2.5.1 build; a cancel has not confirmed yet (the one attempt lost the race to a fill).
+- **LIT direct swaps have not been used on-chain from this app.** Both directions are accepted by the live pool
+  contract in simulation; none was signed or broadcast.
 - **Lithos lending has not been used on-chain from this app.** Joins at several priority fees are accepted by the
   live emission contracts in simulation, and a reward sweep was built from a real lender's matured boxes; none was
   signed or broadcast. The Lithos scripts are pinned byte for byte: if Lithos upgrades them, joins are refused (the

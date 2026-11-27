@@ -54,6 +54,9 @@ app, do not sign it.
 - **Swapuz is a custodial exchange, not a bridge.** It holds your ERG until it pays out the other coin. The
   rate shown is an estimate, there is a high minimum, and Swapuz can put an exchange on hold and ask for
   identity documents. Problems with an exchange are between you and Swapuz (support@swapuz.com).
+- **LIT "Swap now" trades with the LithosDex pool directly**, in one transaction you sign, with no miner fee. If
+  another trade uses the pool first, yours is rejected and nothing is spent. It needs the newer library build in
+  `vendor/`; without it only orders are offered.
 - **LIT orders wait for a Lithos miner.** An order on LithosDex is filled by a Lithos miner, usually within a
   few minutes, at the pool price then and never below your minimum. If the price is out of reach it waits. LIT is thinly traded, so larger trades move the price a lot. You can cancel until it fills.
   Signing needs the 2.5 release of the Ergo wallet app from Google Play or the Apple App Store, or the latest 2.5 Android APK from GitHub; other builds refuse to sign and nothing is sent.
