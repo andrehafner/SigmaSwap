@@ -184,6 +184,10 @@
   of that exact box passes the order contract. `sffill` mints the 3 bond units and is refused if the order's terms
   differ from the ones previewed. `sfcancel`, `sfrepay` (borrower only), `sfliquidate` (at maturity, or early under
   the oracle rule) and `sfclaim` each pass the real contract in simulation before a signing link is answered.
+  A bond or vault is only shown or acted on if its asset is genuine: the box whose id the asset carries must have been
+  spent as a standard order (anyone can place a look-alike box at the bond script and send its token to a victim). A
+  request under the oracle rule is not offered for funding while its collateral is under its own ratio. Both checks
+  follow the Lithos client's ZC Standard implementation, which pins the same contract set.
 - **SigmaLithos direct swap** (needs ergo-lib 0.29; otherwise only orders are offered): `ldswap` spends the LithosDex
   pool box together with the user's boxes into the updated pool and the user's change, and is only returned if the pool
   contract accepts it in simulation and the output is at least the user's minimum. No executor is paid. A competing

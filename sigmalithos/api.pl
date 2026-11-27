@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 11;
+use constant APP_VERSION => 12;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5%', 100 => '1%', 300 => '3%', 1000 => '10%');
@@ -1071,6 +1071,8 @@ sub act_sfmine {
             $pay->('sfcancel', $o->{box}, 'Cancel and take the collateral back', 'SECONDARY');
     }
     push @rows, note('No open requests from this address.') unless $c;
+    push @rows, note("$m->{ignored} look-alike loan" . ($m->{ignored} == 1 ? ' is' : 's are') . ' hidden: made to look like SigmaFi but not created by a SigmaFi order. '
+                     . 'Ignore any token someone sent you to make one appear.') if $m->{ignored};
     push @rows, button('Refresh', 'sfMine', style => 'TEXT');
     sf_area(\@rows, @extra);
 }
