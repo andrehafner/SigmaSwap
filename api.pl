@@ -40,7 +40,7 @@ use MosaikKit;
 
 use constant APP_VERSION => 13;     # bump when the Mosaik view changes: open wallets reload
 use constant ERG         => '0' x 64;
-use constant SLIPPAGE    => (50 => '0.5 %', 100 => '1 %', 300 => '3 %', 1000 => '10 %');
+use constant SLIPPAGE    => (50 => '0.5%', 100 => '1%', 300 => '3%', 1000 => '10%');
 
 $CGI::POST_MAX        = 64 * 1024;
 $CGI::DISABLE_UPLOADS = 1;
@@ -129,12 +129,12 @@ sub fmt_rate {    # "1 FROM ~ x TO", six significant digits
     return $s;
 }
 
-sub fmt_pct {    # basis points -> "0.32 %"
+sub fmt_pct {    # basis points -> "0.32%"
     my ($bps) = @_;
     my $s = sprintf('%.2f', $bps / 100);
     $s =~ s/0+\z//;
     $s =~ s/\.\z//;
-    return "$s %";
+    return "$s%";
 }
 
 # =================================================================== pools ==
