@@ -184,6 +184,12 @@
   of that exact box passes the order contract. `sffill` mints the 3 bond units and is refused if the order's terms
   differ from the ones previewed. `sfcancel`, `sfrepay` (borrower only), `sfliquidate` (at maturity, or early under
   the oracle rule) and `sfclaim` each pass the real contract in simulation before a signing link is answered.
+  Standing lend offers (`LendOffer`, delivering the bond unit itself, standard ERG/SigUSD collateral policy):
+  `sfoffernew` posts one and is only returned if a stand-in request built to the offer's own limits can be matched
+  with it under the order, offer and policy contracts; `sfoffers` lists usable offers; `sfmatch` lets a borrower fund
+  their own request from an offer that accepts it (the same test the contract makes, done first off-chain);
+  `sfoffercancel` returns the unused capital. `sfaddcollateral` adds more of a loan's collateral token (borrower only,
+  at most once per 60 blocks, as the bond enforces).
   A bond or vault is only shown or acted on if its asset is genuine: the box whose id the asset carries must have been
   spent as a standard order (anyone can place a look-alike box at the bond script and send its token to a victim). A
   request under the oracle rule is not offered for funding while its collateral is under its own ratio. Both checks
@@ -361,7 +367,10 @@
   vault were accepted against stand-in boxes. Nothing was signed or broadcast. The protocol calls itself not deployed,
   had 4 orders and 3 bonds on chain when this was written, and has re-pinned its contracts three times in two weeks; a
   re-pin leaves this app blind to newer boxes until its pins are updated, while existing loans keep working.
-  Priced and window orders, lend offers, shares, asks, wraps, recollateralizing and the SigUSD market are not handled.
+  Offers, matching and adding collateral were accepted by the real contracts against stand-in boxes, and cancelling
+  the one live offer as its owner was accepted too. Offers that deliver shares or use a yield curve can be cancelled
+  here but are not matched. Priced and window orders, shares, asks, wraps, repaying from collateral, buying back a
+  bond and the SigUSD market are not handled.
   The library patch in `vendor/` is this project's own, not upstream.
 - **LIT direct swaps have not been used on-chain from this app.** Both directions are accepted by the live pool
   contract in simulation; none was signed or broadcast.

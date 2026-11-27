@@ -70,6 +70,8 @@ app, do not sign it.
   and the claim is lost. SigmaFi V2's authors still describe it as not deployed and re-issued its contracts
   several times in November 2026; this app pins one version and does not see loans made under another.
   Only the ERG market, plain requests, and the maturity and ERG/SigUSD oracle rules are handled.
+  A standing offer to lend only funds SigUSD-backed loans, and anyone may match it with a request that meets
+  its terms: the lender does not choose the borrower. Each loan from an offer costs the offer 0.005 ERG.
 - **Lending collateral cannot be cancelled.** A position locks 2.915 ERG, an optional priority fee and a LIT
   permit (several thousand LIT) until a Lithos miner uses it. How long that takes depends on the queue and on
   how often Lithos finds blocks; if it stopped finding blocks the position would keep waiting. When it is used

@@ -4092,6 +4092,7 @@ def _sf_bond_view(raw, height, oracle):
     erg = int(raw["value"]) - reserve
     assets = _sf_assets(raw, 1)
     v = dict(t, box=raw["boxId"], asset=asset_id, borrower=_sf_hash(raw, "R5"), reserve=str(reserve), start=start, maturity=maturity,
+             created=int(raw.get("creationHeight", 0)),
              blocks=maturity - height, collateral_erg=str(erg), collateral=assets)
     cover = _sf_cover_bps(r6, erg, assets, oracle) if t["rule"] == "oracle" else None
     if cover is not None:
@@ -4210,7 +4211,18 @@ def cmd_sfmine(req):
         flag = _sf_reg(raw, "R5").get("serializedValue")
         claims.append({"box": raw["boxId"], "asset": a[0]["tokenId"], "erg": str(int(raw["value"])), "tokens": _sf_assets(raw, 1),
                        "how": "repaid" if flag == "0200" else "liquidated" if flag == "0201" else "settled"})
-    return {"height": height, "orders": orders, "debts": debts, "lent": lent, "claims": claims, "ignored": fakes,
+    offers = []
+    try:
+        _sf_offer_pins()
+        views = [o for o in (_sf_offer_view(b, height) for b in _sf_offer_boxes(cfg)) if o]
+        offers = [o for o in views if o["owner"] == me]
+        for od in orders:
+            od["match"] = any(o["owner"] != me and _sf_offer_accepts(o, od, height, oracle) for o in views)
+    except SwapError:
+        pass
+    for d in debts:
+        d["can_add"] = bool(d["collateral"] and d["blocks"] > 5 and height + 1 >= int(d.get("created", 0)) + 60)
+    return {"height": height, "orders": orders, "debts": debts, "lent": lent, "claims": claims, "ignored": fakes, "offers": offers,
             "balance_erg": str(int(bal.get("nanoErgs", 0)))}
 
 
@@ -4525,6 +4537,331 @@ def cmd_sfclaim(req):
 
 
 
+# ---- SigmaFi: standing lend offers, matching, adding collateral ----
+# A lend offer is a lender's capital waiting in a box with its terms: the least yearly yield, the loan
+# lengths it accepts and the least collateral cover. Anyone may match it with a borrower's order that
+# meets those terms, for the fee the offer sets; the bond token goes to the offer's owner. The offer's
+# policy only accepts loans under the ERG/SigUSD oracle rule, so offers fund SigUSD-backed loans only.
+
+SF_OFFER_TREE = "1bed1182010e000e20802a89eb52be746700099523bbba257e51805ea8fbc4c795a19c45b1d650b4fe0e2027440806b7461d5a0f5087b9ceff6b77ca8411bf91be5d2508a2fc3e75ffde110101040004000416041e0400044004500404040004000100040c0406044004800104000406042001000402040004000400040005020400040204000400040004000500040604160500041c05000500041c050004040605009ca41900040404000404040204000601010404040204020400040004000404040404020404040204000580897a058092f401040204040400050004020580897a0400050204000408040004000e20e0f3e8f3b69a2906800e43adc86fd72192ed979f2a58c9addf5d3c6585aaa66b04080412040c0414040204000502050205020e20319a66e05ae32391584bb6f649e1c91dfb2eead2c496768c53de0a101c1114c505040500058092f40104040400040604040500040204040500040e0400040204000400041604020400040005000418041a050005000406058092f401041c0500041c05c80105a09c010602271006030f42400406050005000400040204000400d805d601c5a7d602e4c6a7040ed6037300d6047301d605730295aea4d9010663ed94c57206720193cbc272067202d17303d808d606e4c6a70511d607b17206d608937203b4720173047305d60995720873067307d60ae4e30004d60be4c6a7060ed60ce4c6a70711d60db4720b7308730995ecececec8f720772099172079a7209730a949e9972077209730b730c8f720a730d92720ab1a5d1730ed801d60e7ea3059592720eb27206730f00d801d60fb2a5720a00d1ededed93cbc2720f720293e4c6720f040e720193db6308720fdb6308a792c1720f99c1a7b27206731000d801d60fb1720b95eced94720f731194720f7312d801d610b1720ced9472107313ec8f721073149172107315d17316d823d610e30204d611e67210d612ef7211d613957212b2a5731700b2db6501fee4e3030400d614b2db63087213731800d6158c721401d616957212b2a5731900b2a5e4e3050400d617db63087216d618b27217731a00d6198c721801d61a8c721802d61be4c672130911d61ce3060ed61ded7211e6721cd61e95721ddc6a04dd01e4721c63a7d61f95721db2e4c6721e0811731b00731cd620b27206731d00d621e4c672130611d622957212957208b27221731e008cb2e4c67213070c4d0e731f0002d801d622b2a5e4e3070400957208c17222d801d623db6308722295ed91b172237320938cb272237321000172038cb27223732200027323d623957208b27206732400d801d623b2720673250095ededed917223732691b272067327007328917222732990722272237d9d9c7eb27206732a00067e7222067e72230605732bd624b4720672097207d625db0c0e7224d62699b2721b732c00720ed627732dd628b17224d6299d7228732ed62a937229732fd62bb1b57225d9012b04ed939e722b7330733190b27224722b007226d62c95ecec722a93722b733293722b72297333d801d62c9c7334722b7e99b272249a722c733500b2722499722c73360006d62d95722a7eb27206733700069593722b73387eb27224733900069593722b72297eb27224997228733a0006d802d62d9c733b99722b733cd62e7eb27224722d00069a9c722e722c9c997eb272249a722d733d0006722e7e997226b272249a722d733e0006d62e9c7e722006722cd62fec93b1720c733f721dd63095722f73409a9a7341b2720c734200b2720c734300d631b2a5720a00d6329a9a9a72237230957212b2721b73440073459572087222957212b272217346007347ea02d1ededededed957212d801d633b2a4734800edededededefe6e30304d801d634cbc27233ec93723472049372347205937215c57233937219721593721a734993b2721b734a00b27206734b00d805d633b2a4e4721000d634c57233d635e4e30704d636b2a5723500d637e4e3040eedededededededededededed947234720191b1db63087233734c938cb2db63087233734d0001721993cbc27236e4c67233040e93e4c67236040e723493e4c672360505721a947235720a947235e4e3050495721dd801d638e4c6721e0811edededededed93cbe4721c7219eded93cbc2721e734e92b27238734f00b2720673500090b27238735100b2720673520093b1db6308721e7353938cb2db6308721e73540001721592721f735592721a735690721a721fed937219721593721a735793cb72377215d801d638cbc2dc6a04dd01723763ec9372387204937238720593cbc272137358938c7214027359edededededededed927220735a927223735baf7225d9013304ecec939e7233735c735d8f7233735e91b27224723300b27224997233735f009172267360927226b27206736100907226b272067362009172227363927222b27206736400929c9c9c7eb27221736500067e721a067227722c9c9c7e9572089a722272237222067e721f069a9c7227722c9c958f722d722e722e722d7e722606eded93b17217736692c17216723095722fed93cbc27216720293e4c67216070e7201ededed93cbc27216e4c6a7090e93e4c67216070eb37202720193e4c672160811720c93e4c67216091ae4c6a7081a957208eded93b1db63087231736793b1db6308a7736892c1723199c1a77232d806d633b27206736900d634db6308a7d63595ed93b17234736a938cb27234736b000172038cb27234736c0002736dd636b27206736e00d637b27206736f00d6389972357222ededededededededededededed91723373709072357233917236737192b27206737200737391b2720673740073758fb27206737600723692723773779072377378929c7e72220673799c7e7233067e723706909c997ec1a7067ec17231067e7233069c7e7236067e722206927ec17231069a737a7eb27206737b0006927238737c92c1723199c1a7723295937238737d93b1db63087231737ed801d639db63087231eded93b17239737f938cb2723973800100017203938cb2723973810100027238edededededed93c27231c2a793e4c67231040e720293e4c672310511720693e4c67231060eb3720d720193e4c672310711720c93e4c67231081ae4c6a7081a93e4c67231090ee4c6a7090e93cbe4e3010e720dd40801"
+SF_OFFER_HASH = "5fac97abf7d708d6e83b0600404fbd0b0ff33466afb134fb09713f08bdbd1844"
+SF_POLICY = "46e567ce0f55faeba92af61563ff1901bcbf94df6e06fdba4e5deb525ae8d1a5"
+SF_POLICY_EXPR = "d808d6010e2003faf2cb329f2e90d6d23b58d91bbb6c046aa143261cc21f52fbe2824bfcbf04d602e4c6a70511d603b27202040a00d604b27202041000d605b5db6501fed9010563aedb63087205d901074d0eed938c7207010e206a2b821b5727e85beb5e78b4efb9f0250d59cd48481d2ded2c23e91ba1d07c66938c7207020502d60695e6e30204b2db6501fee4e3030400b2a5040200d607e4c672060611d608e4c67206091195ececececececececefec0101930e00720190720305008f7204050291720405c09a0c94b1720504028fb17207041294b1720804068fb27208040000050091b27208040000c17206d10100d807d609b27205040000d60a7e8cc772090105d60be4c672090405d60cb27207040000d60d060164d60e7e720b06d60fdb63087206d1eded93e4c67206080e0e20bd55b5c986032ad2ad4abe9eb98b8864584b772b8e44a2fc97c35f6f91d552d2eded92b27207040e00720392b27207041000720490b2720704100005c09a0cedededededed92720a050090720a7ea30590997ea305720a720491720b050092e4c672090504040091720c0500929c9a9c7e99c17206b2720804000006720d9c720e7eb0b4720f0402b1720f0500d90110414d0ed802d6128c721002d6138c72100195938c72120172019a72138c721202721306060227109c9501019c7e720c06720d9c720e7e720c067e720306"
+SF_OFFER_FEE = 5000000            # what the offer pays whoever matches it, per loan
+SF_OFFER_MAX_AGE = 30             # oldest oracle price the offer accepts, in blocks
+SF_OFFER_MIN_LEFT = 1000000       # an offer box can never go under the box minimum
+_sf_offer_addr = None
+
+
+def _sf_offer_pins():
+    _sf_pins()
+    if not (_b2b(bytes.fromhex(SF_OFFER_TREE)) == SF_OFFER_HASH and _b2b(bytes.fromhex(SF_POLICY_EXPR)) == SF_POLICY
+            and all(h in SF_OFFER_TREE for h in (SF_ORDER_HASH, SF_PRICED_ORDER_HASH, SF_BOND_HASH))):
+        raise SwapError("SigmaFi offers are unavailable: their contract data failed a self-check.")
+
+
+def _sf_offer_boxes(cfg):
+    """Unspent offer boxes. The offer script is too long to look up by its tree, so by its address."""
+    global _sf_offer_addr
+    if _sf_offer_addr is None:
+        from ergo_lib_python.chain import Address, NetworkPrefix
+        from ergo_lib_python.ergo_tree import ErgoTree
+        _sf_offer_addr = Address.recreate_from_ergo_tree(ErgoTree.from_bytes(bytes.fromhex(SF_OFFER_TREE))).to_str(NetworkPrefix.Mainnet)
+    out, offset = [], 0
+    while offset < SF_MAX_SCAN:
+        items = (explorer(cfg, "boxes/unspent/byAddress/%s?limit=100&offset=%d" % (_sf_offer_addr, offset)) or {}).get("items") or []
+        out.extend(b for b in items if b.get("ergoTree") == SF_OFFER_TREE)
+        offset += 100
+        if len(items) < 100:
+            break
+    return out
+
+
+def _sf_offer_view(raw, height):
+    """An ERG offer this app can match: it delivers the bond token itself and uses the standard policy."""
+    t = _sf_longs(raw, "R5")
+    owner = _sf_hash(raw, "R4")
+    r6 = _sf_reg(raw, "R6").get("renderedValue") or ""
+    if not t or len(t) < 11 or len(t) > 51 or (len(t) - 11) % 2 or not owner or raw.get("assets"):
+        return None
+    plain = (_sf_reg(raw, "R7").get("serializedValue") == "1100" and _sf_reg(raw, "R8").get("serializedValue") == "1a00"
+             and _sf_reg(raw, "R9").get("serializedValue") == "0e00")
+    curve = t[11:]
+    value = int(raw["value"])
+    v = {"box": raw["boxId"], "owner": owner, "value": str(value), "yield_bps": t[0], "min_blocks": t[1], "max_blocks": t[2],
+         "fee": str(t[3]), "reserve": str(t[4]), "floor_bps": t[5], "expiry": t[6], "blocks_to_expiry": t[6] - height,
+         "min_loan": str(t[7]), "max_age": t[8], "curve": curve,
+         # what one loan can take at most: the box less the fee, the bond token's box, the reserve and the box minimum
+         "max_loan": str(max(0, value - t[3] - SF_UNIT_VALUE - t[4] - SF_OFFER_MIN_LEFT))}
+    v["usable"] = bool(plain and len(r6) in (64, 128) and r6[:64] == SF_POLICY and t[0] >= 0 and t[3] >= 2000000 and t[4] >= 0
+                       and t[5] > 0 and 1 <= t[8] <= 100000 and t[6] - height > 3 and int(v["max_loan"]) >= max(t[7], 1)
+                       and all(curve[j] > curve[j - 2] for j in range(3, len(curve), 2)))
+    return v
+
+
+def _sf_offer_rate(o, remaining):
+    """(required yield x span, span) at `remaining` blocks to maturity, exactly as the offer contract computes it."""
+    curve, points = o["curve"], len(o["curve"]) // 2
+    below = sum(1 for j in range(1, len(curve), 2) if curve[j] <= remaining)
+    flat = points == 0 or below == 0 or below == points
+    span = 1 if flat else curve[2 * below + 1] - curve[2 * below - 1]
+    if points == 0:
+        rate = o["yield_bps"]
+    elif below == 0:
+        rate = curve[0]
+    elif below == points:
+        rate = curve[-2]
+    else:
+        low = 2 * (below - 1)
+        rate = curve[low] * span + (curve[low + 2] - curve[low]) * (remaining - curve[low + 1])
+    return max(rate, o["yield_bps"] * span), span
+
+
+def _sf_offer_accepts(o, order, height, oracle):
+    """Whether offer `o` would fund `order` (an order view) if matched in the next few blocks."""
+    if not o["usable"] or not order["fillable"] or order["rule"] != "oracle" or not oracle:
+        return False
+    price, repayment = int(order["principal"]), int(order["repayment"])
+    if price < int(o["min_loan"]) or price > int(o["max_loan"]) or order["ratio_bps"] < o["floor_bps"] or order["max_age"] < o["max_age"]:
+        return False
+    if order.get("cover_bps") is None or order["cover_bps"] < o["floor_bps"] or height - oracle["created"] > o["max_age"] - 3:
+        return False
+    year = 2628000000
+    for late in (1, 4):                                   # the loan may land one to a few blocks from now
+        remaining = (order["term"] - late) if order["mode"] == 1 else (order["term"] - height - late)
+        if remaining <= 0 or remaining < o["min_blocks"] or remaining > o["max_blocks"]:
+            return False
+        required, span = _sf_offer_rate(o, remaining)
+        if repayment * year * span < (price + int(o["fee"])) * (year * span + required * remaining):
+            return False
+    return True
+
+
+def cmd_sfoffers(req):
+    cfg = req["cfg"]
+    _sf_offer_pins()
+    height = _sf_height(cfg)
+    me = _sf_me(req_address(req["address"]))[1] if req.get("address") else None
+    offers, skipped = [], 0
+    for raw in _sf_offer_boxes(cfg):
+        v = _sf_offer_view(raw, height)
+        if not v or not v["usable"]:
+            skipped += 1
+            continue
+        v["mine"] = bool(me and v["owner"] == me)
+        offers.append(v)
+    offers.sort(key=lambda v: (v["yield_bps"], -int(v["max_loan"])))
+    return {"height": height, "offers": offers[:40], "skipped": skipped}
+
+
+def cmd_sfoffernew(req):
+    """Post a standing offer to lend ERG against SigUSD collateral."""
+    from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, NetworkPrefix
+    from ergo_lib_python.ergo_tree import ErgoTree
+    from ergo_lib_python.transaction import UnsignedTransaction
+    cfg = req["cfg"]
+    _sf_offer_pins()
+    address = req_address(req.get("address"))
+    addr_str = address.to_str(NetworkPrefix.Mainnet)
+    my_tree, me = _sf_me(address)
+    fee = miner_fee(cfg)
+    capital = req_amount(req.get("capital"), "amount to offer")
+    yield_bps, floor_bps = int(req.get("yield_bps") or 0), int(req.get("floor_bps") or 0)
+    min_days, max_days, open_days = int(req.get("min_days") or 0), int(req.get("max_days") or 0), int(req.get("open_days") or 0)
+    if not (0 < yield_bps <= 100000) or not (15000 <= floor_bps <= 100000):
+        raise SwapError("Choose the interest you ask and the collateral you require.")
+    if not (1 <= min_days <= max_days <= 730) or not (1 <= open_days <= 90):
+        raise SwapError("Choose the loan lengths you accept and how long the offer stays open.")
+    overhead = SF_OFFER_FEE + SF_UNIT_VALUE + SF_FEE_RESERVE + SF_OFFER_MIN_LEFT
+    if capital < 100000000 + overhead:
+        raise SwapError("Offer at least 0.16 ERG: each loan also takes about 0.057 ERG of fees and reserve from the offer.")
+    ctx, height = chain_context(cfg)
+    min_loan = max(100000000, (capital - overhead) // 10)
+    terms = [yield_bps, min_days * SF_BLOCKS_PER_DAY - 10, max_days * SF_BLOCKS_PER_DAY, SF_OFFER_FEE, SF_FEE_RESERVE, floor_bps,
+             height + open_days * SF_BLOCKS_PER_DAY, min_loan, SF_OFFER_MAX_AGE, 9000, 0]
+    regs = {"R4": _bytes_const(bytes.fromhex(me)), "R5": _coll_long(terms), "R6": _bytes_const(bytes.fromhex(SF_POLICY)),
+            "R7": "1100", "R8": "1a00", "R9": "0e00"}
+    user_boxes = fetch_user_boxes(cfg, addr_str)
+    if not user_boxes:
+        raise SwapError("No funds found on this address.")
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: capital + fee + change_need(len(toks)), None, 0)
+    tx_json = {"inputs": [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen], "dataInputs": [],
+               "outputs": [_box_json(capital, SF_OFFER_TREE, height, [], regs)]
+                          + _user_boxes_json(address, height, user_toks, user_erg - capital - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, chosen, [], ctx, (), "offer")
+    # prove the offer works: match it with a stand-in borrower's order built to its own limits, and ask both contracts
+    try:
+        oracle = _sf_oracle(cfg)
+        if not oracle or height - oracle["created"] > SF_OFFER_MAX_AGE - 2:
+            raise ValueError("no fresh oracle")
+        offer_box = tx.outputs[0]
+        offer_raw = {"boxId": hexid(offer_box.box_id), "value": capital, "ergoTree": SF_OFFER_TREE, "assets": [],
+                     "additionalRegisters": {k: {"serializedValue": v} for k, v in regs.items()}}
+        offer_view = {"box": offer_raw["boxId"], "fee": str(SF_OFFER_FEE), "reserve": str(SF_FEE_RESERVE)}
+        term = max(terms[1] + 20, min(terms[2], 30 * SF_BLOCKS_PER_DAY))
+        repay = min_loan + min_loan * (yield_bps + 500) * term // (10000 * SF_YEAR_BLOCKS) + SF_OFFER_FEE * 2
+        usd = (100 * repay * floor_bps * 11 // 10) // (oracle["price"] * 10000) + 2
+        r4 = [repay, min_loan, repay, term, height + 100, SF_EXPIRY_FEE, 1, floor_bps, SF_ORACLE_MAX_AGE, floor_bps]
+        oregs = {"R4": _coll_long(r4), "R5": "0c4d0e00", "R6": _bytes_const(bytes.fromhex(_b2b(bytes.fromhex(MINER_FEE_TREE)))),
+                 "R7": _bytes_const(bytes.fromhex(SF_ORACLE_RULE)), "R8": _bytes_const(bytes.fromhex(SF_FILL_GUARD))}
+        seed = hexid(chosen[0].box_id)
+        stand_in = UnsignedTransaction.from_json(json.dumps({
+            "inputs": [{"boxId": seed, "extension": {}}], "dataInputs": [],
+            "outputs": [_box_json(SF_COLLATERAL_ERG + SF_EXPIRY_FEE, SF_ORDER_TREE, height, [(SIGUSD_ID, usd)], oregs),
+                        _box_json(5000000, MINER_FEE_TREE, height)]}))
+        order_box, funder = stand_in.outputs[0], stand_in.outputs[1]
+        order_raw = {"boxId": hexid(order_box.box_id), "assets": [{"tokenId": SIGUSD_ID, "amount": usd}],
+                     "additionalRegisters": {k: {"serializedValue": v} for k, v in oregs.items()}}
+        view = dict(_sf_terms(r4, SF_ORACLE_RULE, SF_FILL_GUARD), collateral_erg=str(SF_COLLATERAL_ERG), principal=str(min_loan),
+                    repayment=str(repay), expiry_fee=str(SF_EXPIRY_FEE))
+        match = _sf_match_json(order_raw, view, offer_raw, offer_view, MINER_FEE_TREE, my_tree, [funder],
+                               [_box_json(5000000 + SF_OFFER_FEE - fee, MINER_FEE_TREE, height)], height, oracle, fee)
+        _sf_finish(match, [order_box, offer_box, funder], [ErgoBox.from_json(oracle["raw"])], ctx, (0, 1), "offer self-test")
+    except SwapError:
+        raise SwapError("The offer could not be prepared. Please try again.")
+    except Exception as e:
+        sys.stderr.write("sigmaswap.py: sigmafi offer self-test failed: %s: %s\n" % (type(e).__name__, str(e)[:300]))
+        raise SwapError("The offer could not be prepared: the ERG/USD oracle price is too old to check it right now. Please try again in a few minutes.")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "capital": str(capital), "yield_bps": yield_bps,
+            "floor_bps": floor_bps, "min_days": min_days, "max_days": max_days, "open_days": open_days, "min_loan": str(min_loan),
+            "miner_fee": str(fee), "watch_box": hexid(chosen[0].box_id)}
+
+
+def _sf_match_json(order_raw, view, offer_raw, offer, borrower_tree, owner_tree, chosen, change_boxes, height, oracle, fee):
+    """order + offer + the matcher's boxes -> bond token to the offer's owner, the bond, the principal to the
+    borrower, what is left of the offer, the matcher's change (with the offer's fee), miner fee."""
+    oid, fid = order_raw["boxId"], offer_raw["boxId"]
+    oreg, freg = order_raw["additionalRegisters"], offer_raw["additionalRegisters"]
+    start = height
+    maturity = view["term"] if view["mode"] == 0 else start + view["term"]
+    name, desc = _sf_unit_meta(oid, view, start, maturity)
+    reserve, principal = int(offer["reserve"]), int(view["principal"])
+    left = int(offer_raw["value"]) - int(offer["fee"]) - SF_UNIT_VALUE - reserve - principal
+    outputs = [
+        _box_json(SF_UNIT_VALUE, owner_tree, height, [(oid, 1)],
+                  {"R4": _bytes_const(name), "R5": _bytes_const(desc), "R6": "0e0130", "R7": _bytes_const(bytes.fromhex(fid))}),
+        _box_json(int(view["collateral_erg"]) + reserve, SF_BOND_TREE, start,
+                  [(oid, 2)] + [(a["tokenId"], int(a["amount"])) for a in order_raw.get("assets") or []],
+                  {"R4": _bytes_const(bytes.fromhex(oid)), "R5": oreg["R6"]["serializedValue"], "R6": oreg["R4"]["serializedValue"],
+                   "R7": oreg["R5"]["serializedValue"], "R8": oreg["R7"]["serializedValue"],
+                   "R9": _coll_long([reserve, start, maturity])}),
+        _box_json(principal + int(view["expiry_fee"]), borrower_tree, height, [], {"R4": _bytes_const(bytes.fromhex(oid))}),
+        _box_json(left, SF_OFFER_TREE, height, [],
+                  {"R4": freg["R4"]["serializedValue"], "R5": freg["R5"]["serializedValue"],
+                   "R6": _bytes_const(bytes.fromhex(SF_POLICY + fid)), "R7": "1100", "R8": "1a00", "R9": "0e00"}),
+    ] + change_boxes + [_box_json(fee, MINER_FEE_TREE, height)]
+    guard = {"1": _bytes_const(bytes.fromhex(SF_EXPR[SF_FILL_GUARD]))} if view["guard"] == "oracle" else {}
+    return {"inputs": [{"boxId": oid, "extension": guard},
+                       {"boxId": fid, "extension": {"0": _int_const(3), "1": _bytes_const(bytes.fromhex(SF_POLICY_EXPR))}}]
+                      + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+            "dataInputs": [{"boxId": oracle["raw"]["boxId"]}], "outputs": outputs}
+
+
+def _sf_best_offer(cfg, order, height, oracle, skip_owner=None):
+    best = None
+    for raw in _sf_offer_boxes(cfg):
+        o = _sf_offer_view(raw, height)
+        if o and o["owner"] != skip_owner and _sf_offer_accepts(o, order, height, oracle):
+            if best is None or int(o["max_loan"]) > int(best[1]["max_loan"]):
+                best = (raw, o)
+    return best
+
+
+def cmd_sfmatch(req):
+    """Fund one of this address's requests from a standing offer that accepts it. Anyone may match; here the borrower does."""
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_offer_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    my_tree, me = _sf_me(address)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_ORDER_TREE)
+    ctx, height = chain_context(cfg)
+    oracle = _sf_oracle(cfg)
+    v = _sf_order_view(raw, height, oracle)
+    if not v or v["borrower"] != me:
+        raise SwapError("This request does not belong to this address.")
+    found = _sf_best_offer(cfg, v, height, oracle, skip_owner=me)
+    if not found:
+        raise SwapError("No open offer accepts this request right now. It stays open for lenders to fund.")
+    offer_raw, offer = found
+    owner_tree = _sf_script(cfg, offer_raw, offer["owner"])
+    gain = int(offer["fee"]) - fee
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: max(0, -gain) + change_need(len(toks)), None, 0)
+    change = _user_boxes_json(address, height, user_toks, user_erg + gain)
+    tx_json = _sf_match_json(raw, v, offer_raw, offer, my_tree, owner_tree, chosen, change, height, oracle, fee)
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw), ErgoBox.from_json(offer_raw)] + chosen, [ErgoBox.from_json(oracle["raw"])],
+                             ctx, (0, 1), "match")
+    maturity = v["term"] if v["mode"] == 0 else height + v["term"]
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "principal": v["principal"], "repayment": v["repayment"],
+            "blocks": maturity - height, "offer": offer["box"], "miner_fee": str(fee), "watch_box": raw["boxId"]}
+
+
+def cmd_sfoffercancel(req):
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_offer_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    fee = miner_fee(cfg)
+    raw = _sf_box(cfg, req.get("box"), SF_OFFER_TREE)
+    if _sf_hash(raw, "R4") != _sf_me(address)[1] or raw.get("assets"):
+        raise SwapError("This offer does not belong to this address.")
+    ctx, height = chain_context(cfg)
+    chosen, user_erg, user_toks = select_inputs(user_boxes, lambda toks: 1000000 + change_need(len(toks)), None, 0)
+    tx_json = {"inputs": [{"boxId": raw["boxId"], "extension": {}}] + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [],
+               "outputs": _user_boxes_json(address, height, user_toks, user_erg + int(raw["value"]) - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, [], ctx, (0,), "offer cancel")
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "value": str(int(raw["value"])), "miner_fee": str(fee),
+            "watch_box": raw["boxId"]}
+
+
+def cmd_sfaddcollateral(req):
+    """The borrower adds more of the collateral token to a running loan, to keep it above its ratio."""
+    from ergo_lib_python.chain import ErgoBox
+    cfg = req["cfg"]
+    _sf_pins()
+    address, addr_str, user_boxes = _sf_own(cfg, req)
+    my_tree, me = _sf_me(address)
+    fee = miner_fee(cfg)
+    amount = req_amount(req.get("amount"), "amount to add")
+    raw = _sf_box(cfg, req.get("box"), SF_BOND_TREE)
+    ctx, height = chain_context(cfg)
+    v = _sf_bond_view(raw, height, None)
+    if not v or v["borrower"] != me or not _sf_genuine(cfg, v["asset"]):
+        raise SwapError("This loan does not belong to this address.")
+    assets = raw.get("assets") or []
+    if len(assets) < 2:
+        raise SwapError("This loan holds no collateral token to add to.")
+    token = assets[1]["tokenId"]
+    if v["maturity"] - height < 5:
+        raise SwapError("It is too late to add collateral: the loan is at its maturity.")
+    wait = int(raw.get("creationHeight", 0)) + 60 - (height + 1)
+    if wait > 0:
+        raise SwapError("Collateral can be added at most once every 60 blocks (about two hours). Try again in about %d minutes." % (wait * 2 + 2))
+
+    def need_erg(toks):
+        n = len(set(toks) - ({token} if toks.get(token) == amount else set()))
+        return fee + change_need(n)
+    chosen, user_erg, user_toks = select_inputs(user_boxes, need_erg, token, amount)
+    out_toks = dict(user_toks)
+    out_toks[token] -= amount
+    reg = raw["additionalRegisters"]
+    new_assets = [(a["tokenId"], int(a["amount"]) + (amount if i == 1 else 0)) for i, a in enumerate(assets)]
+    tx_json = {"inputs": [{"boxId": raw["boxId"], "extension": {"3": _int_const(0)}}]
+                         + [{"boxId": hexid(b.box_id), "extension": {}} for b in chosen],
+               "dataInputs": [],
+               "outputs": [_box_json(int(raw["value"]), SF_BOND_TREE, height, new_assets,
+                                     {k: reg[k]["serializedValue"] for k in ("R4", "R5", "R6", "R7", "R8", "R9")})]
+                          + _user_boxes_json(address, height, out_toks, user_erg - fee) + [_box_json(fee, MINER_FEE_TREE, height)]}
+    tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, [], ctx, (0,), "add collateral")
+    m = _asset({"id": token, "ticker": assets[1].get("name"), "decimals": assets[1].get("decimals")})
+    return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str,
+            "added": {"id": token, "amount": str(amount), "name": m["ticker"], "decimals": m["decimals"]},
+            "miner_fee": str(fee), "watch_box": raw["boxId"]}
+
+
+
 def alert_prices(pools):
     """{asset id: price as a 1e-9 fixed-point int}. For a token: ERG per 1 token, from its
     ERG pool. For ERG itself: SigUSD per 1 ERG, from the ERG/SigUSD pool."""
@@ -4610,7 +4947,9 @@ COMMANDS = {"health": cmd_health, "pools": cmd_pools, "quote": cmd_quote, "balan
             "lendinfo": cmd_lendinfo, "lendjoin": cmd_lendjoin, "lendclaim": cmd_lendclaim,
             "ldlpquote": cmd_ldlpquote, "ldlpbuild": cmd_ldlpbuild, "ldpositions": cmd_ldpositions, "ldclaim": cmd_ldclaim,
             "ldredeem": cmd_ldredeem, "ldquote": cmd_ldquote, "ldbuild": cmd_ldbuild, "sfmarket": cmd_sfmarket, "sforder": cmd_sforder, "sfmine": cmd_sfmine, "sffill": cmd_sffill,
-            "sfcreate": cmd_sfcreate, "sfcancel": cmd_sfcancel, "sfrepay": cmd_sfrepay, "sfliquidate": cmd_sfliquidate, "sfclaim": cmd_sfclaim, "ldswap": cmd_ldswap, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
+            "sfcreate": cmd_sfcreate, "sfcancel": cmd_sfcancel, "sfrepay": cmd_sfrepay, "sfliquidate": cmd_sfliquidate, "sfclaim": cmd_sfclaim,
+            "sfoffers": cmd_sfoffers, "sfoffernew": cmd_sfoffernew, "sfmatch": cmd_sfmatch, "sfoffercancel": cmd_sfoffercancel,
+            "sfaddcollateral": cmd_sfaddcollateral, "ldswap": cmd_ldswap, "ldorders": cmd_ldorders, "ldcancel": cmd_ldcancel,
             "ldstatus": cmd_ldstatus, "lithosstats": cmd_lithosstats, "lithosminer": cmd_lithosminer,
             "szcoins": cmd_szcoins, "szquote": cmd_szquote, "szorder": cmd_szorder, "szstatus": cmd_szstatus}
 
