@@ -4315,6 +4315,7 @@ def cmd_sffill(req):
     tx, reduced = _sf_finish(tx_json, [ErgoBox.from_json(raw)] + chosen, data, ctx, (0,), "fill")
     return {"reduced_tx": reduced, "tx_id": hexid(tx.id), "address": addr_str, "principal": v["principal"], "repayment": v["repayment"],
             "reserve": str(SF_FEE_RESERVE), "maturity": maturity, "blocks": maturity - height, "asset": raw["boxId"],
+            "collateral": v["collateral"],
             "miner_fee": str(fee), "watch_box": raw["boxId"]}
 
 

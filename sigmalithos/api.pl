@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 14;
+use constant APP_VERSION => 15;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5%', 100 => '1%', 300 => '3%', 1000 => '10%');
@@ -798,6 +798,25 @@ sub tok_text {    # one token amount; the name is untrusted on-chain text, so th
     my $name = (defined $a->{name} && !ref $a->{name} && length $a->{name}) ? $a->{name} : 'token';
     return fmt_amount($a->{amount}, $dec) . " $name (" . substr($a->{id}, 0, 6) . "\x{2026})";
 }
+# A token amount as the wallet's own token label (its verified badge, and the token's details on tap), with the
+# bundled logo in front when there is one. Falls back to text for anything that is not exactly one token.
+(my $ROOT = $BASE) =~ s{/[a-z]+\z}{};    # the main app's address, where the token logos are
+sub tok_el {
+    my ($a, $style) = @_;
+    return undef unless ref $a eq 'HASH' && ($a->{id} // '') =~ /^[0-9a-f]{64}\z/ && ($a->{amount} // '') =~ /^\d{1,18}\z/;
+    my $dec  = (($a->{decimals} // '') =~ /^\d\z/) ? $a->{decimals} : 0;
+    my $name = (defined $a->{name} && !ref $a->{name} && length $a->{name}) ? $a->{name} : undef;
+    my $lbl  = O(type => 'TokenLabel', tokenId => $a->{id}, tokenName => $name, decimals => $dec ? N($dec) : undef,
+                 amount => N($a->{amount}), style => $style || 'BODY1BOLD');
+    return $lbl unless -f "$FindBin::Bin/../icons/$a->{id}.png";
+    return row([ O(type => 'Image', url => "$ROOT/icons/$a->{id}.png", size => 'SMALL'), $lbl ], spacing => 'HALF_DEFAULT');
+}
+sub sf_collateral_el {
+    my ($o) = @_;
+    my @c = @{ ref $o->{collateral} eq 'ARRAY' ? $o->{collateral} : [] };
+    my $el = (@c == 1 && ($o->{collateral_erg} // 0) <= 1000000) ? tok_el($c[0]) : undef;
+    return $el || sf_collateral($o);
+}
 sub sf_collateral {
     my ($o) = @_;
     my @t = map { tok_text($_) } @{ ref $o->{collateral} eq 'ARRAY' ? $o->{collateral} : [] };
@@ -860,7 +879,7 @@ sub act_sfmarket {
             child(label('Lend ' . erg($o->{principal}) . ', get back ' . erg($o->{repayment}) . ($o->{mine} ? '  (yours)' : ''), 'BODY1BOLD'), align => 'START'),
             kv_row('Interest', sf_interest($o, $o->{blocks}), style => 'BODY1'),
             kv_row('Runs', sf_days($o->{blocks}) . ($o->{mode} ? ' from the day it is funded' : ''), style => 'BODY1'),
-            kv_row('Collateral', sf_collateral($o), style => 'BODY1'),
+            kv_row('Collateral', sf_collateral_el($o), style => 'BODY1'),
             (defined $o->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $o->{cover_bps} / 100), style => 'BODY1') : ()),
             button('Details', "ord$n", style => 'SECONDARY');
         last if $n >= 10;
@@ -886,7 +905,7 @@ sub act_sforder {
         kv_row('You are owed', erg($o->{repayment}), style => 'HEADLINE2', color => 'PRIMARY'),
         kv_row('Interest', sf_interest($o, $o->{blocks})),
         kv_row('Runs', sf_days($o->{blocks}) . ($o->{mode} ? ' from now' : '')),
-        kv_row('Collateral', sf_collateral($o)),
+        kv_row('Collateral', sf_collateral_el($o)),
         (defined $o->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $o->{cover_bps} / 100)) : ()),
         O(type => 'HorizontalRule', vPadding => 'HALF_DEFAULT'),
         kv_row('Liquidation reserve', erg($r->{fee_reserve})),
@@ -944,8 +963,8 @@ sub act_sfoffer {
     my $v    = posted_values();
     my $addr = good_address($v->{address}) or return mosaik_dialog('Choose your wallet address first.');
     my $f    = sf_offer_form($v);
-    my $drop = sub { my ($id, $val, %entries) = @_;
-        child(O(type => 'DropDownList', id => $id, value => "$val", onValueChanged => 'clearSfOffer', entries => O(%entries)), align => 'JUSTIFY') };
+    my $drop = sub { my ($id, $val, @entries) = @_;    # a list, not a hash: the wallet shows entries in this order
+        child(O(type => 'DropDownList', id => $id, value => "$val", onValueChanged => 'clearSfOffer', entries => O(@entries)), align => 'JUSTIFY') };
     my @rows = (
         child(label('Offer to lend', 'BODY1BOLD'), align => 'START'),
         note('A standing offer: your ERG waits in the offer, and any borrower whose request meets your terms can take a loan from it, '
@@ -1017,7 +1036,7 @@ sub act_sfadd {    # add collateral to one of this address's running loans
     my @extra = (O(type => 'BackendRequestAction', url => "$API?action=sfaddq&t=$box", id => 'sfAddPreview', postValues => 'VALID'));
     my @rows = (
         child(label('Add collateral', 'BODY1BOLD'), align => 'START'),
-        kv_row('Locked now', sf_collateral($b), style => 'BODY1'),
+        kv_row('Locked now', sf_collateral_el($b), style => 'BODY1'),
         (defined $b->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $b->{cover_bps} / 100)
                                           . (defined $b->{ratio_bps} ? sprintf(' (taken under %.0f %%)', $b->{ratio_bps} / 100) : ''), style => 'BODY1') : ()),
         child(O(type => 'DecimalInputField', id => 'sfa_9', value => (defined $v->{sfa_9} && !ref $v->{sfa_9} && "$v->{sfa_9}" =~ /^[1-9]\d{0,18}\z/) ? N("$v->{sfa_9}") : undef,
@@ -1117,7 +1136,7 @@ sub act_sfbq {
     my $fee = cfg('MINER_FEE', 1100000) + 0;
     my $o = { principal => $pr, repayment => $re };
     my @rows = (
-        kv_row('You lock', tok_text({ %$sel, amount => $amount->bstr }), style => 'HEADLINE2', color => 'PRIMARY'),
+        kv_row('You lock', tok_el({ %$sel, amount => $amount->bstr }) || tok_text({ %$sel, amount => $amount->bstr }), style => 'HEADLINE2', color => 'PRIMARY'),
         kv_row('You receive, once a lender funds it', erg($pr), style => 'HEADLINE2', color => 'PRIMARY'),
         kv_row('You repay', erg($re)),
         kv_row('Interest', sf_interest($o, $f->{days} * 720)),
@@ -1180,7 +1199,7 @@ sub act_sfmine {
         my $due = ($b->{state} // '') ne 'live';
         push @rows, $rule->(),
             kv_row('Owed to you', erg($b->{repayment})),
-            kv_row('Collateral', sf_collateral($b), style => 'BODY1'),
+            kv_row('Collateral', sf_collateral_el($b), style => 'BODY1'),
             (defined $b->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $b->{cover_bps} / 100), style => 'BODY1') : ()),
             kv_row('Status', $b->{state} eq 'due' ? 'not repaid: maturity passed' : $b->{state} eq 'at_risk' ? 'collateral under its ratio'
                              : 'running, ' . sf_days($b->{blocks}) . ' left', style => 'BODY1');
@@ -1196,7 +1215,7 @@ sub act_sfmine {
         last if ++$c > 6;
         push @rows, $rule->(),
             kv_row('To repay', erg($b->{repayment}), color => 'PRIMARY'),
-            kv_row('Collateral locked', sf_collateral($b), style => 'BODY1'),
+            kv_row('Collateral locked', sf_collateral_el($b), style => 'BODY1'),
             (defined $b->{cover_bps} ? kv_row('Collateral / repayment now', sprintf('%.0f %%', $b->{cover_bps} / 100)
                                               . (defined $b->{ratio_bps} ? sprintf(' (taken under %.0f %%)', $b->{ratio_bps} / 100) : ''), style => 'BODY1') : ()),
             kv_row('Time left to repay', $b->{blocks} > 3 ? sf_days($b->{blocks}) : 'none', style => 'BODY1');
@@ -1219,7 +1238,7 @@ sub act_sfmine {
         last if ++$c > 6;
         push @rows, $rule->(),
             kv_row('Asking for', erg($o->{principal}) . ', repaying ' . erg($o->{repayment}), style => 'BODY1'),
-            kv_row('Collateral', sf_collateral($o), style => 'BODY1'),
+            kv_row('Collateral', sf_collateral_el($o), style => 'BODY1'),
             kv_row('Open for', ($o->{blocks_to_expiry} // 0) > 0 ? sf_days($o->{blocks_to_expiry}) . ' more' : 'closed: not funded', style => 'BODY1'),
             ($o->{match} ? ($pay->('sfmatch', $o->{box}, 'Borrow now from an open offer'),
                             note('A lender\'s standing offer accepts this request. Taking it pays you the ERG at once.')) : ()),
@@ -1543,7 +1562,9 @@ sub act_ergopay {
             elsif ($p{k} eq 'sfmatch') {
                 $r = chain('sfmatch', { box => $p{t}, address => $addr }, 90);
                 $msg = sub { "$APPNAME: " . 'BORROW ' . erg($r->{principal}) . ' now from a lender\'s open offer. You must repay ' . erg($r->{repayment})
-                             . ' within ' . sf_days($r->{blocks}) . ' or lose the collateral in your request.' };
+                             . ' within ' . sf_days($r->{blocks}) . ' or lose the collateral in your request. '
+                             . 'READING THE LIST BELOW: the bond token goes to the lender; your collateral moves from the request into the loan '
+                             . 'contract; the rest of the lender\'s offer returns to the offer contract. You pay only the network fee.' };
             }
             elsif ($p{k} eq 'sfadd') {
                 return ergopay_error('Invalid request.') unless defined $p{a} && $p{a} =~ /^[1-9]\d{0,18}\z/;
@@ -1556,14 +1577,19 @@ sub act_ergopay {
                                          open_days => $p{o}, address => $addr }, 90);
                 $msg = sub { "$APPNAME: " . 'post a SigmaFi loan request. Your collateral is locked in the request; a lender who funds it pays you '
                              . erg($r->{principal}) . ", and you must repay " . erg($r->{repayment}) . " within $r->{days} days of the funding "
-                             . 'or lose ALL the collateral. You can cancel in ' . $APPNAME . ' until it is funded.' };
+                             . 'or lose ALL the collateral. You can cancel in ' . $APPNAME . ' until it is funded. '
+                             . 'READING THE LIST BELOW: the amount to the long address is your collateral and 0.006 ERG going into the request.' };
             }
             elsif ($p{k} eq 'sffill') {
                 return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my);
                 $r = chain('sffill', { box => $p{t}, principal => $p{a}, repayment => $p{my}, address => $addr }, 90);
                 $msg = sub { "$APPNAME: " . 'LEND ' . erg($r->{principal}) . ' on SigmaFi, to be repaid ' . erg($r->{repayment}) . ' within '
                              . sf_days($r->{blocks}) . '. You also put in a ' . erg($r->{reserve}) . ' reserve that comes back with the repayment. '
-                             . 'You receive a bond token: keep it, it is your claim. If the borrower does not repay you get the collateral, not ERG.' };
+                             . 'You receive a bond token: keep it, it is your claim. If the borrower does not repay you get the collateral, not ERG. '
+                             . 'READING THE LIST BELOW: the amount to the 9... address is the loan going to the borrower (with 0.005 ERG of their own '
+                             . 'request fee returned to them). The amount to the long address is the loan contract: your reserve, 2 bond tokens that '
+                             . 'stay locked there, and the borrower\'s COLLATERAL (' . (join(' + ', map { tok_text($_) } @{ ref $r->{collateral} eq 'ARRAY' ? $r->{collateral} : [] }) || 'none')
+                             . '), which is theirs, not paid by you. The 1 bond token to your own address is yours.' };
             }
             elsif ($p{k} eq 'sfcancel') {
                 $r = chain('sfcancel', { box => $p{t}, address => $addr }, 90);
@@ -1571,7 +1597,9 @@ sub act_ergopay {
             }
             elsif ($p{k} eq 'sfrepay') {
                 $r = chain('sfrepay', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { "$APPNAME: " . 'repay your SigmaFi loan with ' . erg($r->{repayment}) . '. Your collateral returns to this address in the same transaction.' };
+                $msg = sub { "$APPNAME: " . 'repay your SigmaFi loan with ' . erg($r->{repayment}) . '. Your collateral returns to this address in the same transaction. '
+                             . 'READING THE LIST BELOW: the amount to the long address is your repayment (plus the lender\'s own reserve) going into the '
+                             . 'vault the lender collects from.' };
             }
             elsif ($p{k} eq 'sfliq') {
                 $r = chain('sfliquidate', { box => $p{t}, address => $addr }, 90);
