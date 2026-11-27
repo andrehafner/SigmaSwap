@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SigmaFi</title>
+<meta name="description" content="Peer-to-peer loans on Ergo in your wallet: borrow ERG against tokens, lend it, or post an offer to lend.">
+<!-- Ergo wallets look for this tag: opening this page's URL as a Mosaik dApp loads api.pl -->
+<link rel="mosaik" href="api.pl">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top">
+    <img src="icon.png" alt="" width="40" height="40">
+    <div>
+        <h1>SigmaFi</h1>
+        <p class="sub">Peer-to-peer loans on Ergo, in your wallet</p>
+    </div>
+</header>
+<main>
+    <section class="card">
+        <h2>Open it in your Ergo wallet</h2>
+        <p>SigmaFi is a Mosaik dApp: it runs inside the Ergo wallet app.</p>
+        <ol>
+            <li>Copy the address below.</li>
+            <li>In the Ergo wallet app open <strong>dApps</strong> (Mosaik) and paste it into the address field.</li>
+            <li>Choose your wallet address, then lend, offer to lend, borrow, or open "My loans".</li>
+        </ol>
+        <div class="copy">
+            <input id="appUrl" type="text" readonly aria-label="SigmaFi dApp address">
+            <button id="copyApp" type="button">Copy</button>
+        </div>
+    </section>
+    <section class="card">
+        <h2>Good to know</h2>
+        <ul class="plain">
+            <li><strong>Independent.</strong> This app is not made by the SigmaFi or Lithos developers. It uses the SigmaFi V2 bond contracts (the "ZC Standard") as they publish them.</li>
+            <li><strong>Borrow.</strong> Lock tokens as collateral and ask for ERG. Repay in full before maturity and the collateral comes back; after maturity you can no longer repay and the lender takes all of it.</li>
+            <li><strong>Lend.</strong> Fund someone's request, or post a standing offer that borrowers with SigUSD collateral can take. You receive a bond token for each loan: it is your claim, so keep it.</li>
+            <li><strong>My loans.</strong> Cancel a request or an offer, repay, add collateral, move unpaid collateral to its vault, and collect a settled loan.</li>
+            <li><strong>New contracts.</strong> SigmaFi V2 is new and its authors still describe it as not deployed. Use small amounts. Signing needs the 2.5 release of the Ergo wallet app.</li>
+        </ul>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

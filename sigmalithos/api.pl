@@ -29,7 +29,7 @@ use File::Spec;
 use AppConfig qw(cfg base_url chain);
 use MosaikKit;
 
-use constant APP_VERSION => 13;
+use constant APP_VERSION => 14;
 use constant ERG         => '0' x 64;
 use constant LIT         => 'c1980d829988229516430a47a5eca376060b6ce859616db0936e78ab25cb6de7';
 use constant SLIPPAGE    => (50 => '0.5%', 100 => '1%', 300 => '3%', 1000 => '10%');
@@ -40,7 +40,11 @@ $CGI::DISABLE_UPLOADS = 1;
 my $cgi = CGI->new;
 print $cgi->header(-type => 'application/json', -charset => 'utf-8', -cache_control => 'no-store');
 
-my $BASE = base_url('sigmalithos');
+# SigmaFi is served as its own app from ../sigmafi/api.pl, which sets this and runs this file: the two apps
+# share every helper here (signing links, status screens, notifications) and differ in name, icon and start screen.
+my $SF      = (($ENV{SIGMA_APP} // '') eq 'sigmafi') ? 1 : 0;
+my $APPNAME = $SF ? 'SigmaFi' : 'SigmaLithos';
+my $BASE = base_url($SF ? 'sigmafi' : 'sigmalithos');
 my $API  = "$BASE/api.pl";
 
 my $action = $cgi->url_param('action');
@@ -256,10 +260,6 @@ sub home_view {
                   'Locks about 3 ERG and a few thousand LIT until a miner uses them, and cannot be cancelled once placed. One position per address.'
                  ,
                   'Lend collateral', 'goLend', 'SECONDARY')),
-        $choice->('SigmaFi loans', 'Borrow ERG against tokens you hold, or lend ERG to other people for interest, with SigmaFi V2 bonds.',
-                  'Loans are between two people. A borrower who does not repay in time loses the collateral to the lender. '
-                  . 'SigmaFi V2 is new and its authors still call it not deployed: use small amounts.',
-                  'SigmaFi loans', 'goSf', 'SECONDARY'),
         label('An independent app, not made by the Lithos project. It cannot set up or control a miner: that needs the Lithos client on your own computer.',
               'BODY2', color => 'SECONDARY', talign => 'CENTER'),
         button('lithosprotocol.org', 'openLithos', style => 'TEXT'),
@@ -453,6 +453,19 @@ sub trade_view {
 # ================================================================= actions ==
 
 sub act_app {
+    if ($SF) {
+        my ($view) = sf_view({});
+        return out_json(O(
+            manifest => O(
+                appName => 'SigmaFi', appDescription => 'Peer-to-peer loans on Ergo: borrow ERG against tokens, lend it, or post an offer to lend.',
+                iconUrl => "$BASE/icon.png", appVersion => N(APP_VERSION), targetMosaikVersion => N(2),
+                targetCanvasDimension => 'COMPACT_WIDTH', cacheLifetime => N(0),
+                notificationCheckUrl => "$API?action=notify",
+            ),
+            actions => [ base_actions() ],
+            view    => $view,
+        ));
+    }
     out_json(O(
         manifest => O(
             appName => 'SigmaLithos', appDescription => 'The Lithos mining pool: dashboard, your payouts, and LIT trading.',
@@ -464,7 +477,7 @@ sub act_app {
         view    => home_view(undef),
     ));
 }
-sub act_home  { mosaik_replace(home_view(good_address(posted_values()->{address}) || good_address($cgi->url_param('addr')))) }
+sub act_home  { return act_sf() if $SF; mosaik_replace(home_view(good_address(posted_values()->{address}) || good_address($cgi->url_param('addr')))) }
 sub act_dash  {
     my $addr = good_address(posted_values()->{address}) || good_address($cgi->url_param('addr'));
     my $q    = $addr ? "&addr=$addr" : '';
@@ -811,7 +824,7 @@ sub sf_ok { my ($o) = @_; return ref $o eq 'HASH' && ($o->{box} // '') =~ /^[0-9
 sub sf_view {
     my ($v, $area, @extra) = @_;
     my $addr = good_address($v->{address});
-    my @kids = (header_rows('SigmaFi loans'), address_card($addr, 'goSf'),
+    my @kids = (($SF ? label('SigmaFi', 'HEADLINE1', color => 'PRIMARY') : header_rows('SigmaFi loans')), address_card($addr, 'goSf'),
         child(card(column([
             child(label('Peer-to-peer loans in ERG', 'BODY1BOLD'), align => 'START'),
             note('A borrower locks tokens as collateral and asks for ERG. A lender pays the ERG and receives a bond token. Repaid before '
@@ -823,7 +836,8 @@ sub sf_view {
             button('My loans', 'sfMine', style => 'SECONDARY'),
         ], padding => 'DEFAULT', spacing => 'HALF_DEFAULT')), align => 'JUSTIFY'),
         child($area || O(type => 'Box', id => 'sfarea', children => []), align => 'JUSTIFY'),
-        label('SigmaFi V2 is an open protocol by the Lithos developers. Its authors still describe it as not deployed and have changed its '
+        label(($SF ? 'An independent app, not made by the SigmaFi or Lithos developers. ' : '')
+              . 'SigmaFi V2 is an open protocol by the Lithos developers. Its authors still describe it as not deployed and have changed its '
               . 'contracts several times this month: loans made today stay valid, but use small amounts. ' . $WALLET_NOTE,
               'BODY2', color => 'SECONDARY', talign => 'CENTER'));
     return (column(\@kids, id => 'main', padding => 'DEFAULT', spacing => 'DEFAULT'), @extra);
@@ -1515,58 +1529,58 @@ sub act_ergopay {
             return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my ms m d o);
             $r = chain('sfoffernew', { capital => $p{a}, yield_bps => $p{my}, floor_bps => $p{ms}, min_days => $p{m}, max_days => $p{d},
                                        open_days => $p{o}, address => $addr }, 90);
-            $msg = sub { 'SigmaLithos: post a SigmaFi offer to LEND up to ' . erg($r->{capital}) . ' at ' . sprintf('%.0f %%', $r->{yield_bps} / 100)
+            $msg = sub { "$APPNAME: " . 'post a SigmaFi offer to LEND up to ' . erg($r->{capital}) . ' at ' . sprintf('%.0f %%', $r->{yield_bps} / 100)
                          . " a year or more, for loans of $r->{min_days} to $r->{max_days} days backed by SigUSD worth at least "
                          . sprintf('%.0f %%', $r->{floor_bps} / 100) . ' of the repayment. Any borrower who meets these terms can take a loan from it. '
-                         . 'You can cancel the unused part in SigmaLithos.' };
+                         . 'You can cancel the unused part in ' . $APPNAME . '.' };
         }
         elsif ($p{k} =~ /^sf/) {
             return ergopay_error('Invalid request.') unless defined $p{t} && $p{t} =~ /^[0-9a-f]{64}\z/;
             if ($p{k} eq 'sfocancel') {
                 $r = chain('sfoffercancel', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: cancel your SigmaFi lend offer and take back the ' . erg($r->{value}) . ' left in it.' };
+                $msg = sub { "$APPNAME: " . 'cancel your SigmaFi lend offer and take back the ' . erg($r->{value}) . ' left in it.' };
             }
             elsif ($p{k} eq 'sfmatch') {
                 $r = chain('sfmatch', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: BORROW ' . erg($r->{principal}) . ' now from a lender\'s open offer. You must repay ' . erg($r->{repayment})
+                $msg = sub { "$APPNAME: " . 'BORROW ' . erg($r->{principal}) . ' now from a lender\'s open offer. You must repay ' . erg($r->{repayment})
                              . ' within ' . sf_days($r->{blocks}) . ' or lose the collateral in your request.' };
             }
             elsif ($p{k} eq 'sfadd') {
                 return ergopay_error('Invalid request.') unless defined $p{a} && $p{a} =~ /^[1-9]\d{0,18}\z/;
                 $r = chain('sfaddcollateral', { box => $p{t}, amount => $p{a}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: add ' . tok_text($r->{added}) . ' to the collateral of your SigmaFi loan. It returns when you repay.' };
+                $msg = sub { "$APPNAME: " . 'add ' . tok_text($r->{added}) . ' to the collateral of your SigmaFi loan. It returns when you repay.' };
             }
             elsif ($p{k} eq 'sfnew') {
                 return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my ms d o);
                 $r = chain('sfcreate', { token => $p{t}, amount => $p{a}, principal => $p{my}, repayment => $p{ms}, days => $p{d},
                                          open_days => $p{o}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: post a SigmaFi loan request. Your collateral is locked in the request; a lender who funds it pays you '
+                $msg = sub { "$APPNAME: " . 'post a SigmaFi loan request. Your collateral is locked in the request; a lender who funds it pays you '
                              . erg($r->{principal}) . ", and you must repay " . erg($r->{repayment}) . " within $r->{days} days of the funding "
-                             . 'or lose ALL the collateral. You can cancel in SigmaLithos until it is funded.' };
+                             . 'or lose ALL the collateral. You can cancel in ' . $APPNAME . ' until it is funded.' };
             }
             elsif ($p{k} eq 'sffill') {
                 return ergopay_error('Invalid request.') if grep { !defined $p{$_} || $p{$_} !~ /^[1-9]\d{0,18}\z/ } qw(a my);
                 $r = chain('sffill', { box => $p{t}, principal => $p{a}, repayment => $p{my}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: LEND ' . erg($r->{principal}) . ' on SigmaFi, to be repaid ' . erg($r->{repayment}) . ' within '
+                $msg = sub { "$APPNAME: " . 'LEND ' . erg($r->{principal}) . ' on SigmaFi, to be repaid ' . erg($r->{repayment}) . ' within '
                              . sf_days($r->{blocks}) . '. You also put in a ' . erg($r->{reserve}) . ' reserve that comes back with the repayment. '
                              . 'You receive a bond token: keep it, it is your claim. If the borrower does not repay you get the collateral, not ERG.' };
             }
             elsif ($p{k} eq 'sfcancel') {
                 $r = chain('sfcancel', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: cancel your SigmaFi loan request and take the collateral back.' };
+                $msg = sub { "$APPNAME: " . 'cancel your SigmaFi loan request and take the collateral back.' };
             }
             elsif ($p{k} eq 'sfrepay') {
                 $r = chain('sfrepay', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: repay your SigmaFi loan with ' . erg($r->{repayment}) . '. Your collateral returns to this address in the same transaction.' };
+                $msg = sub { "$APPNAME: " . 'repay your SigmaFi loan with ' . erg($r->{repayment}) . '. Your collateral returns to this address in the same transaction.' };
             }
             elsif ($p{k} eq 'sfliq') {
                 $r = chain('sfliquidate', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: move the collateral of an unpaid SigmaFi loan into its vault. You are paid ' . erg($r->{reward}, 4)
+                $msg = sub { "$APPNAME: " . 'move the collateral of an unpaid SigmaFi loan into its vault. You are paid ' . erg($r->{reward}, 4)
                              . ' from the loan\'s reserve. The bond holder then collects the vault.' };
             }
             else {
                 $r = chain('sfclaim', { box => $p{t}, address => $addr }, 90);
-                $msg = sub { 'SigmaLithos: collect a settled SigmaFi loan: ' . erg($r->{erg}) . ' and any collateral in the vault come to this address. The bond token is burned.' };
+                $msg = sub { "$APPNAME: " . 'collect a settled SigmaFi loan: ' . erg($r->{erg}) . ' and any collateral in the vault come to this address. The bond token is burned.' };
             }
         }
         elsif ($p{k} eq 'swap') {

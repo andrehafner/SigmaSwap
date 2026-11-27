@@ -176,7 +176,8 @@
   transaction is reduced against a stand-in box of the same value owned by that key and the real box id is put
   back, because the library cannot evaluate the contract (see limitations). Open orders are found on-chain by
   the contracts' template hashes and kept only if they belong to the address and the ERG:LIT pool.
-- **SigmaLithos SigmaFi loans** (needs the patched ergo-lib 0.29 in `vendor/`): the ZC Standard contracts of
+- **SigmaFi** (`sigmafi/`, its own app and address; `sigmafi/api.pl` runs `sigmalithos/api.pl` with a flag that
+  changes the name, icon and start screen) (needs the patched ergo-lib 0.29 in `vendor/`): the ZC Standard contracts of
   Sigma-Finance-V2 at commit `adce8ac`, ERG market, pinned byte for byte and self-checked against their published
   hashes. `sfmarket`/`sforder` list open `Order` boxes; `sfmine` finds an address's requests (order R6), debts (bond
   R5) and funded loans or settled vaults (bond units it holds). `sfcreate` posts a request (maturity rule, or the

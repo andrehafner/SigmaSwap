@@ -1,6 +1,6 @@
 # SigmaSwap
 
-Six small apps for the [Ergo](https://ergoplatform.org) blockchain that run **inside the Ergo wallet
+Seven small apps for the [Ergo](https://ergoplatform.org) blockchain that run **inside the Ergo wallet
 app** (as [Mosaik](https://github.com/MrStahlfelge/mosaik) dApps). You fill in a form in the wallet,
 the app prepares a transaction, and your wallet shows it and signs it.
 
@@ -11,7 +11,8 @@ the app prepares a transaction, and your wallet shows it and signs it.
 | **SigmaMint** | Mint your own token or NFT | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmamint/` |
 | **SigmaBridge** | Take funds out of Ergo: ERG and tokens to other chains over the Rosen bridge, or ERG sold for another coin through the Swapuz exchange | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmabridge/` |
 | **SigmaStats** | Ergo network figures, a portfolio view of any address, and price alerts. Read-only: it never asks for a signature | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmastats/` |
-| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, providing liquidity there, lending collateral to the pool, and SigmaFi V2 loans (borrow ERG against tokens, or lend it) | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
+| **SigmaLithos** | The Lithos mining pool: a pool dashboard, what a mining address earned, buying or selling LIT on LithosDex, providing liquidity there, and lending collateral to the pool | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmalithos/` |
+| **SigmaFi** | Peer-to-peer loans with SigmaFi V2 bonds: borrow ERG against tokens, fund a request, post a standing offer to lend, repay, add collateral, and collect | `https://my.ergoport.dev/cgi-bin/sigmaswap/sigmafi/` |
 
 To use one: open the Ergo wallet app, go to **dApps**, and enter its address. Opening the same
 address in a browser shows a short description page.
@@ -112,7 +113,7 @@ It is a set of Perl CGI scripts with one Python helper (using
 
 | Path | Purpose |
 |---|---|
-| `api.pl`, `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/`, `sigmalithos/` | The six apps (Mosaik views and ErgoPay endpoints) |
+| `api.pl`, `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/`, `sigmalithos/`, `sigmafi/` | The seven apps (Mosaik views and ErgoPay endpoints; `sigmafi/` runs the code in `sigmalithos/api.pl` under its own name) |
 | `sigmaswap.py` | All blockchain logic: quotes, transaction building, contract checks, the order bot |
 | `AppConfig.pm`, `MosaikKit.pm` | Shared configuration and Mosaik helpers |
 | `deploy/` | Apache include and the bot's systemd units |

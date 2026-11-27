@@ -24,14 +24,14 @@ else echo "ERROR: no www-data or apache user found" >&2; exit 1
 fi
 
 # LF line endings (a CRLF first line makes the web server fail to start the script)
-sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh ./sigmamint/*.pl ./sigmalp/*.pl ./sigmabridge/*.pl ./sigmastats/*.pl ./sigmalithos/*.pl 2>/dev/null
+sed -i 's/\r$//' ./*.pl ./*.pm ./*.py ./*.sh ./sigmamint/*.pl ./sigmalp/*.pl ./sigmabridge/*.pl ./sigmastats/*.pl ./sigmalithos/*.pl ./sigmafi/*.pl 2>/dev/null
 
 # root owns everything and nothing here is writable by the web server. The tree holds
 # no secrets (those are in the settings file), so it is world-readable: 755 / 644.
 chown -R root:"$WEB" "$APP_DIR"
 find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -type d -exec chmod 755 {} +
 find "$APP_DIR" -path "$APP_DIR/.git" -prune -o -path "$APP_DIR/venv" -prune -o -type f -exec chmod 644 {} +
-chmod 755 "$APP_DIR"/*.pl "$APP_DIR"/sigmamint/*.pl "$APP_DIR"/sigmalp/*.pl "$APP_DIR"/sigmabridge/*.pl "$APP_DIR"/sigmastats/*.pl "$APP_DIR"/sigmalithos/*.pl "$APP_DIR"/redeploy.sh
+chmod 755 "$APP_DIR"/*.pl "$APP_DIR"/sigmamint/*.pl "$APP_DIR"/sigmalp/*.pl "$APP_DIR"/sigmabridge/*.pl "$APP_DIR"/sigmastats/*.pl "$APP_DIR"/sigmalithos/*.pl "$APP_DIR"/sigmafi/*.pl "$APP_DIR"/redeploy.sh
 [ -d "$APP_DIR/.git" ] && chmod -R a+rX "$APP_DIR/.git"
 [ -d "$APP_DIR/venv" ] && chmod -R a+rX "$APP_DIR/venv"
 
@@ -43,7 +43,7 @@ fi
 
 fail=0
 echo "Web user: $WEB"
-for f in api.pl sigmamint/api.pl sigmalp/api.pl sigmabridge/api.pl sigmastats/api.pl sigmalithos/api.pl; do
+for f in api.pl sigmamint/api.pl sigmalp/api.pl sigmabridge/api.pl sigmastats/api.pl sigmalithos/api.pl sigmafi/api.pl; do
     if [ -x "$APP_DIR/$f" ] && head -1 "$APP_DIR/$f" | grep -q '^#!/usr/bin/perl'; then echo "  ok    $f"
     else echo "  WRONG $f (missing, not executable, or bad first line)"; fail=1; fi
 done

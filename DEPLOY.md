@@ -1,11 +1,11 @@
 # SigmaSwap — Deployment (Debian / Ubuntu, Apache, `/usr/lib/cgi-bin`)
 
-Installs the six apps (SigmaSwap, SigmaLP, SigmaMint, SigmaBridge, SigmaStats, SigmaLithos) from one checkout:
+Installs the seven apps (SigmaSwap, SigmaLP, SigmaMint, SigmaBridge, SigmaStats, SigmaLithos, SigmaFi) from one checkout:
 
 | | |
 |---|---|
 | Code | `/usr/lib/cgi-bin/sigmaswap/` |
-| URL | `https://YOUR-HOST/cgi-bin/sigmaswap/` (and `…/sigmalp/`, `…/sigmamint/`, `…/sigmabridge/`, `…/sigmastats/`, `…/sigmalithos/`) |
+| URL | `https://YOUR-HOST/cgi-bin/sigmaswap/` (and `…/sigmalp/`, `…/sigmamint/`, `…/sigmabridge/`, `…/sigmastats/`, `…/sigmalithos/`, `…/sigmafi/`) |
 | Settings | `/etc/sigmaswap/sigmaswap.env` |
 | Cache | `/var/lib/sigmaswap/` (writable by the web server, not served) |
 | Logs | `/var/log/apache2/error.log` (lines start with `sigmaswap`) |
@@ -104,8 +104,8 @@ curl -sS "$H/api.pl?action=health"; echo
 #   {"success":1,"helper":"ok","height":19xxxxx,"pools":NN,"base_url":"https://my.ergoport.dev/cgi-bin/sigmaswap"}
 #   base_url must be exactly your public https address.
 
-# C2 the six apps answer with their Mosaik JSON
-for a in "" sigmalp/ sigmamint/ sigmabridge/ sigmastats/ sigmalithos/; do curl -sS "$H/${a}api.pl" | head -c 45; echo; done
+# C2 the seven apps answer with their Mosaik JSON
+for a in "" sigmalp/ sigmamint/ sigmabridge/ sigmastats/ sigmalithos/ sigmafi/; do curl -sS "$H/${a}api.pl" | head -c 45; echo; done
 #   {"manifest":{"appName":"SigmaSwap",...   SigmaLP, SigmaMint, SigmaBridge, SigmaStats, SigmaLithos
 
 # C3 web files are served as files (200), source and secrets are not (403)
@@ -118,7 +118,7 @@ sudo ls -l /var/lib/sigmaswap/          # pools.json appears after C1
 ```
 
 Then, in the Ergo wallet app: **dApps → enter `https://my.ergoport.dev/cgi-bin/sigmaswap/`**, and
-the same with `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/`, `sigmalithos/` appended.
+the same with `sigmalp/`, `sigmamint/`, `sigmabridge/`, `sigmastats/`, `sigmalithos/`, `sigmafi/` appended.
 
 ## 8. Order bot (limit orders, routes through ERG, price alerts)
 
@@ -220,7 +220,7 @@ filled by Lithos miners, not by this service's bot. The order contracts and the 
 holding contracts are built into `sigmaswap.py`; if Lithos redeploys its contracts, "My mining" shows nothing and
 new orders would not be filled until the app is updated, so watch their release notes.
 
-**Notifications.** All six apps tell the wallet where to ask for news (`api.pl?action=notify`).
+**Notifications.** All seven apps tell the wallet where to ask for news (`api.pl?action=notify`).
 What an installation started is kept in `watch/` in the cache directory. Nothing to install.
 
 **Token logos.** `icons/` are ordinary files in the repository. To add logos for newly listed
